@@ -47,9 +47,10 @@ export function page(
       'cache-control': 'no-store',
       'x-frame-options': 'DENY',
       'x-content-type-options': 'nosniff',
-      // Signed file links and invite tokens live in console URLs; do not send
-      // them to third-party sites through the Referer header.
-      'referrer-policy': 'no-referrer',
+      // Keep the referrer same-origin. `no-referrer` makes Chrome send
+      // `Origin: null` on same-origin form POSTs, which breaks CSRF checks
+      // behind a console that has no secret-bearing URLs anyway.
+      'referrer-policy': 'same-origin',
       'permissions-policy': 'camera=(), microphone=(), geolocation=()',
       ...headers,
     },

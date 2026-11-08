@@ -131,6 +131,94 @@ describe('console auth', () => {
     expect(response.status).toBe(403)
   })
 
+  test('accepts a public Origin forwarded by a reverse proxy', async () => {
+    const response = await app.request('/console/login', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/x-www-form-urlencoded',
+        origin: 'https://wa.example.com',
+        host: 'gateway:3005',
+        'x-forwarded-host': 'wa.example.com',
+        'x-forwarded-proto': 'https',
+        'sec-fetch-site': 'same-origin',
+      },
+      body: form({ email: EMAIL, password: PASSWORD }),
+    })
+    expect(response.status).toBe(303)
+    expect(response.headers.get('set-cookie')).toContain('wa_console=')
+  })
+
+  test('accepts the configured public origin when the proxy hides every host hint', async () => {
+    config.console.publicUrl = 'https://wa.example.com'
+    const response = await app.request('/console/login', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/x-www-form-urlencoded',
+        origin: 'https://wa.example.com',
+        host: 'gateway:3005',
+      },
+      body: form({ email: EMAIL, password: PASSWORD }),
+    })
+    expect(response.status).toBe(303)
+  })
+
+  test('accepts same-origin posts when a proxy rewrote Host without forwarding it', async () => {
+    const response = await app.request('/console/login', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/x-www-form-urlencoded',
+        origin: 'https://wa.example.com',
+        host: 'gateway:3005',
+        'sec-fetch-site': 'same-origin',
+      },
+      body: form({ email: EMAIL, password: PASSWORD }),
+    })
+    expect(response.status).toBe(303)
+  })
+
+  test('accepts an opaque origin from a same-origin form', async () => {
+    // Chrome sends Origin: null when Referrer-Policy is no-referrer.
+    const response = await app.request('/console/login', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/x-www-form-urlencoded',
+        origin: 'null',
+        host: 'localhost:3005',
+        'sec-fetch-site': 'same-origin',
+      },
+      body: form({ email: EMAIL, password: PASSWORD }),
+    })
+    expect(response.status).toBe(303)
+  })
+
+  test('refuses an opaque origin with a cross-site hint', async () => {
+    const response = await app.request('/console/login', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/x-www-form-urlencoded',
+        origin: 'null',
+        host: 'localhost:3005',
+        'sec-fetch-site': 'cross-site',
+      },
+      body: form({ email: EMAIL, password: PASSWORD }),
+    })
+    expect(response.status).toBe(403)
+  })
+
+  test('refuses a genuinely cross-site origin', async () => {
+    const response = await app.request('/console/login', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/x-www-form-urlencoded',
+        origin: 'https://evil.example',
+        host: 'localhost:3005',
+        'sec-fetch-site': 'cross-site',
+      },
+      body: form({ email: EMAIL, password: PASSWORD }),
+    })
+    expect(response.status).toBe(403)
+  })
+
   test('signs out and clears the cookie', async () => {
     const cookie = await signIn()
     const response = await app.request('/console/logout', {

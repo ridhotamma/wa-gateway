@@ -12,6 +12,19 @@ describe('loadConfig', () => {
     expect(config.typing).not.toBeNull()
     expect(config.console.enabled).toBe(true)
     expect(config.console.sessionTtlMs).toBe(7 * 24 * 60 * 60_000)
+    expect(config.console.publicUrl).toBeNull()
+  })
+
+  test('derives the public console origin from WHATSAPP_DOMAIN', () => {
+    expect(loadConfig({ WHATSAPP_DOMAIN: 'wa.example.com' }).console.publicUrl).toBe(
+      'https://wa.example.com',
+    )
+    expect(
+      loadConfig({
+        WHATSAPP_DOMAIN: 'wa.example.com',
+        WHATSAPP_CONSOLE_URL: 'http://localhost:3005/console?x=1',
+      }).console.publicUrl,
+    ).toBe('http://localhost:3005')
   })
 
   test('reads the console bootstrap admin', () => {

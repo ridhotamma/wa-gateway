@@ -95,6 +95,12 @@ it first. On production, seed the admin from `WHATSAPP_CONSOLE_EMAIL` and
 `WHATSAPP_CONSOLE_PASSWORD`, or finish setup immediately after deployment. The
 `console:admin` CLI can reset a password if the account is locked out.
 
+If login says **"Cross-site request refused."** behind a reverse proxy, set
+`WHATSAPP_CONSOLE_URL` to the public origin (for example
+`https://whatsapp.example.com`), or make the proxy forward the original
+`Host` / `X-Forwarded-Host`. The bundled Compose setup derives this from
+`WHATSAPP_DOMAIN` automatically.
+
 ## API
 
 All routes except public liveness require an API key, as
@@ -209,18 +215,19 @@ SQLite and editable from the console. The outbox/typing/webhook/media/session
 variables in `.env` seed SQLite on first boot only; after that, the console is
 the source of truth. See [`.env.example`](./.env.example).
 
-| Variable                         | Default                       | Notes                                     |
-| -------------------------------- | ----------------------------- | ----------------------------------------- |
-| `NODE_ENV`                       | `development`                 | `production` requires `WHATSAPP_API_KEY`  |
-| `HOST` / `PORT`                  | `0.0.0.0` / `3005`            |                                           |
-| `WHATSAPP_LOG_LEVEL`             | `info`                        | pino level                                |
-| `WHATSAPP_API_KEY`               | empty                         | **Required in production**; permanent key |
-| `WHATSAPP_DATABASE_PATH`         | `./.whatsapp-data/gateway.db` | SQLite file                               |
-| `WHATSAPP_MEDIA_DIR`             | `./.whatsapp-data/media`      | Attachment bytes                          |
-| `WHATSAPP_CONSOLE_ENABLED`       | `true`                        | Set `false` to hide `/console`            |
-| `WHATSAPP_CONSOLE_EMAIL`         | empty                         | Bootstrap admin only                      |
-| `WHATSAPP_CONSOLE_PASSWORD`      | empty                         | Bootstrap admin only (min 10 characters)  |
-| `WHATSAPP_CONSOLE_SESSION_HOURS` | `168`                         | Console session lifetime                  |
+| Variable                         | Default                        | Notes                                     |
+| -------------------------------- | ------------------------------ | ----------------------------------------- |
+| `NODE_ENV`                       | `development`                  | `production` requires `WHATSAPP_API_KEY`  |
+| `HOST` / `PORT`                  | `0.0.0.0` / `3005`             |                                           |
+| `WHATSAPP_LOG_LEVEL`             | `info`                         | pino level                                |
+| `WHATSAPP_API_KEY`               | empty                          | **Required in production**; permanent key |
+| `WHATSAPP_DATABASE_PATH`         | `./.whatsapp-data/gateway.db`  | SQLite file                               |
+| `WHATSAPP_MEDIA_DIR`             | `./.whatsapp-data/media`       | Attachment bytes                          |
+| `WHATSAPP_CONSOLE_ENABLED`       | `true`                         | Set `false` to hide `/console`            |
+| `WHATSAPP_CONSOLE_EMAIL`         | empty                          | Bootstrap admin only                      |
+| `WHATSAPP_CONSOLE_PASSWORD`      | empty                          | Bootstrap admin only (min 10 characters)  |
+| `WHATSAPP_CONSOLE_SESSION_HOURS` | `168`                          | Console session lifetime                  |
+| `WHATSAPP_CONSOLE_URL`           | derived from `WHATSAPP_DOMAIN` | Public console origin for CSRF checks     |
 
 The Settings page controls outbox gap/jitter/cap/retries, typing simulation,
 inbound/status webhook URLs and timeouts, media limits and retention, pairing

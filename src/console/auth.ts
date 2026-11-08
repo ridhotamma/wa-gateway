@@ -1,6 +1,6 @@
 import type { Context, MiddlewareHandler } from 'hono'
 
-import type { Config } from '../config.js'
+import type { Config, ConsoleConfig } from '../config.js'
 import type {
   ConsoleAdmin,
   ConsoleAuthStore,
@@ -86,26 +86,146 @@ export function consoleMiddleware(
   }
 }
 
-/** SameSite guards most cross-site POSTs; this closes the rest. */
-export function consoleCsrf(): MiddlewareHandler<AppEnv> {
+/**
+ * SameSite guards most cross-site POSTs; this closes the rest.
+ *
+ * A reverse proxy may rewrite `Host` to the upstream container while the
+ * browser still sends the public `Origin`. The check therefore accepts the
+ * original/forwarded hosts, and falls back to the browser-controlled
+ * `Sec-Fetch-Site` hint when a proxy has hidden the original host entirely.
+ */
+export function consoleCsrf(consoleConfig: ConsoleConfig): MiddlewareHandler<AppEnv> {
   return async (c, next) => {
-    if (c.req.method !== 'GET' && c.req.method !== 'HEAD') {
-      const origin = c.req.header('origin')
-      if (origin) {
+    if (c.req.method === 'GET' || c.req.method === 'HEAD') return next()
+
+    const site = c.req.header('sec-fetch-site')
+    const origin = c.req.header('origin')
+
+    // No Origin: an older client or a non-browser POST. SameSite=Lax keeps
+    // the console cookie off cross-site POSTs, which is the real protection
+    // for authenticated forms. Still refuse an explicit cross-site hint.
+    if (!origin) {
+      if (site === 'cross-site') return refuse(c, 'cross-site request without an origin')
+      return next()
+    }
+
+    // Chrome sends `Origin: null` for a same-origin form when the page sets
+    // Referrer-Policy: no-referrer (and in some privacy modes). The browser's
+    // Sec-Fetch-Site hint, or a same-origin Referer, still proves the context.
+    if (origin === 'null') {
+      if (site === 'same-origin' || site === 'same-site') return next()
+      const referer = c.req.header('referer')
+      if (referer) {
         try {
-          if (new URL(origin).host !== c.req.header('host')) {
-            return terse(403, 'Cross-site request refused.')
-          }
+          if (originMatchesRequest(new URL(referer), c, consoleConfig.publicUrl)) return next()
         } catch {
-          return terse(403, 'Cross-site request refused.')
+          // Fall through to the refusal.
         }
       }
-      if (c.req.header('sec-fetch-site') === 'cross-site') {
-        return terse(403, 'Cross-site request refused.')
+      return refuse(c, 'opaque origin without a same-origin hint')
+    }
+
+    let originUrl: URL
+    try {
+      originUrl = new URL(origin)
+    } catch {
+      return refuse(c, 'malformed origin')
+    }
+    if (originUrl.protocol !== 'http:' && originUrl.protocol !== 'https:') {
+      return refuse(c, 'non-http origin')
+    }
+
+    // An Origin that matches this request is authoritative. Check it before
+    // Sec-Fetch-Site: a proxy that rewrites Host can make the browser's site
+    // hint look wrong, and a matching Origin is the stronger signal.
+    if (originMatchesRequest(originUrl, c, consoleConfig.publicUrl)) return next()
+
+    // Browsers set this header; page JavaScript cannot forge it. If the
+    // browser says the form is same-origin, a proxy has rewritten Host.
+    if (site === 'same-origin' || site === 'same-site') return next()
+
+    // Some older browsers omit Sec-Fetch-Site; the Referer is the fallback.
+    const referer = c.req.header('referer')
+    if (referer) {
+      try {
+        if (new URL(referer).origin === originUrl.origin) return next()
+      } catch {
+        // Fall through to the refusal.
       }
     }
-    return next()
+
+    return refuse(c, 'origin does not match the request host')
   }
+}
+
+function refuse(c: Context<AppEnv>, reason: string): Response {
+  c.get('logger').warn(
+    {
+      reason,
+      origin: c.req.header('origin'),
+      host: c.req.header('host'),
+      forwardedHost: c.req.header('x-forwarded-host'),
+      forwardedProto: c.req.header('x-forwarded-proto'),
+      site: c.req.header('sec-fetch-site') ?? null,
+    },
+    'console CSRF check refused a request',
+  )
+  return terse(403, 'Cross-site request refused.')
+}
+
+function originMatchesRequest(origin: URL, c: Context<AppEnv>, publicUrl: string | null): boolean {
+  if (publicUrl && origin.origin === publicUrl) return true
+
+  const forwardedProto = c.req.header('x-forwarded-proto')?.split(',')[0]?.trim()
+  const protocols = new Set(
+    [forwardedProto, origin.protocol.slice(0, -1), new URL(c.req.url).protocol.slice(0, -1)].filter(
+      (value): value is string => Boolean(value),
+    ),
+  )
+
+  const hosts = new Set<string>()
+  for (const name of ['host', 'x-forwarded-host', 'x-forwarded-server']) {
+    const raw = c.req.header(name)
+    if (!raw) continue
+    for (const part of raw.split(',')) {
+      const value = part.trim()
+      if (value) hosts.add(value)
+    }
+  }
+  try {
+    hosts.add(new URL(c.req.url).host)
+  } catch {
+    // c.req.url is always absolute in Hono, but keep the guard.
+  }
+
+  for (const host of hosts) {
+    for (const protocol of protocols) {
+      try {
+        if (new URL(`${protocol}://${host}`).origin === origin.origin) return true
+      } catch {
+        // Malformed forwarded host; try the next one.
+      }
+    }
+  }
+
+  // RFC 7239: Forwarded: for=…;host=example.com;proto=https
+  const forwarded = c.req.header('forwarded')
+  if (forwarded) {
+    for (const entry of forwarded.split(',')) {
+      const match = /(?:^|;)\s*host=("[^"]+"|[^;]+)/i.exec(entry)
+      if (!match?.[1]) continue
+      const host = match[1].replace(/^"|"$/g, '')
+      for (const protocol of protocols) {
+        try {
+          if (new URL(`${protocol}://${host}`).origin === origin.origin) return true
+        } catch {
+          // Try the next value.
+        }
+      }
+    }
+  }
+
+  return false
 }
 
 export function setSessionCookie(c: Context, token: string, config: Config): void {

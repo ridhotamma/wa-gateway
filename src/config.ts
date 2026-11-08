@@ -39,6 +39,11 @@ export interface ConsoleConfig {
   email: string | null
   password: string | null
   sessionTtlMs: number
+  /**
+   * The public console origin. Used to validate form posts when a reverse
+   * proxy rewrites Host. Derived from WHATSAPP_DOMAIN when not set.
+   */
+  publicUrl: string | null
 }
 
 export interface Config {
@@ -108,6 +113,12 @@ export function loadConfig(
 
   const inboundUrl = value(env.WHATSAPP_INBOUND_URL)
   const typingEnabled = readBoolean(env, 'WHATSAPP_TYPING', true)
+  const configuredDomain = value(env.WHATSAPP_DOMAIN)
+  const derivedConsoleUrl = configuredDomain
+    ? configuredDomain.includes('://')
+      ? configuredDomain
+      : `https://${configuredDomain}`
+    : null
 
   return {
     nodeEnv,
@@ -126,6 +137,10 @@ export function loadConfig(
         readNumber(env, 'WHATSAPP_CONSOLE_SESSION_HOURS', 24 * 7, { min: 1, max: 24 * 365 }) *
         60 *
         60_000,
+      publicUrl: publicOrigin(
+        value(env.WHATSAPP_CONSOLE_URL) ?? derivedConsoleUrl,
+        'WHATSAPP_CONSOLE_URL',
+      ),
     },
     restoreOnBoot: readBoolean(env, 'WHATSAPP_RESTORE', true),
     restoreDelayMs: readNumber(env, 'WHATSAPP_RESTORE_DELAY_MS', 1_500),
@@ -167,6 +182,17 @@ function value(raw: string | undefined): string | null {
 
 function resolvePath(cwd: string, raw: string | null, fallback: string): string {
   return path.resolve(cwd, raw ?? fallback)
+}
+
+function publicOrigin(raw: string | null, name: string): string | null {
+  if (!raw) return null
+  try {
+    const url = new URL(raw)
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new Error('bad protocol')
+    return url.origin
+  } catch {
+    throw new Error(`${name} must be an absolute http(s) URL (got "${raw}").`)
+  }
 }
 
 function readNodeEnv(raw: string | undefined): Config['nodeEnv'] {

@@ -46,7 +46,7 @@ export function createConsoleApp(deps: ConsoleDependencies): Hono<AppEnv> {
     if (!deps.config.console.enabled) return c.notFound()
     return next()
   })
-  app.use('*', consoleCsrf())
+  app.use('*', consoleCsrf(deps.config.console))
   app.use('*', async (c, next) => {
     try {
       await next()
