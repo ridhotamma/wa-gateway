@@ -4,21 +4,51 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import type { IncomingMessage } from '../engine/index.js'
 
+import { openDatabase, type SqliteDatabase } from '../db/database.js'
 import { webhookUrlFor } from '../lib/callbacks.js'
 import { createInboundForwarder } from './inbound-forwarder.js'
 import { MediaStore } from './media-store.js'
+import type { RuntimeSettings } from './settings-store.js'
 
 let dir: string
+let db: SqliteDatabase
 let store: MediaStore
+let settings: RuntimeSettings
 
 beforeEach(() => {
   dir = mkdtempSync(path.join(tmpdir(), 'wa-forward-'))
-  store = new MediaStore(dir)
+  db = openDatabase(':memory:')
+  settings = runtimeSettings()
+  store = new MediaStore(dir, db, settings)
 })
 
 afterEach(() => {
+  db.close()
   rmSync(dir, { recursive: true, force: true })
 })
+
+function runtimeSettings(): RuntimeSettings {
+  return {
+    outbox: {
+      sendGapMs: 0,
+      sendJitterMs: 0,
+      hourlyCap: 100,
+      maxAgeMs: 60_000,
+      maxAttempts: 3,
+    },
+    typing: null,
+    inbound: {
+      urlTemplate: 'https://hook.test/store/{sessionId}/whatsapp',
+      statusUrlTemplate: null,
+      timeoutMs: 3_000,
+      statusTimeoutMs: 3_000,
+      mediaMaxBytes: 1_000_000,
+      mediaSpoolMaxBytes: 1_000_000,
+      mediaTtlMs: 60_000,
+    },
+    session: { restoreOnBoot: false, restoreDelayMs: 0, pairingTimeoutMs: 60_000 },
+  }
+}
 
 const message = (overrides: Partial<IncomingMessage> = {}): IncomingMessage => ({
   id: 'MSG1',
@@ -51,7 +81,7 @@ describe('inbound forwarding', () => {
 
     try {
       const forward = createInboundForwarder({
-        urlTemplate: 'https://hook.test/store/{sessionId}/whatsapp',
+        settings,
         apiKey: 'secret',
         mediaStore: store,
       })

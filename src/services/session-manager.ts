@@ -1,19 +1,16 @@
-import { existsSync, readdirSync, renameSync } from 'node:fs'
-import path from 'node:path'
-
 import {
   BaileysAdapter,
-  clearSessionDir,
-  getAuthBaseDir,
-  hasPairedCreds,
   PermanentSendError,
   type EngineStatus,
   type IncomingMessage,
   type MessageResult,
+  type StoredSessionInfo,
+  type WhatsAppAuthStore,
 } from '../engine/index.js'
 import { silentLogger, type Logger } from '../lib/logger.js'
 import { maskPhone } from '../lib/phone.js'
 import type { OutboxMessage } from './outbox.js'
+import type { RuntimeSettings } from './settings-store.js'
 import { simulateTyping, type TypingTiming } from './typing.js'
 
 export interface ActiveSession {
@@ -40,22 +37,16 @@ const IN_PROGRESS: ReadonlySet<EngineStatus> = new Set([
 ])
 
 export interface SessionManagerOptions {
-  /** Base directory holding one credential directory per session. */
-  authDir: string
-  pairingTimeoutMs?: number
-  /** Largest inbound attachment the engine downloads before forwarding metadata. */
-  inboundMediaMaxBytes?: number
+  /** SQLite-backed credential store. */
+  authStore: WhatsAppAuthStore
+  /** Live runtime settings; pairing timeout and typing are read per use. */
+  settings: RuntimeSettings
   /**
    * Called for every direct inbound customer message. Wired by the daemon to
    * the webhook forwarder; kept as a callback so the session manager never
    * imports the chatbot or the network.
    */
   forwardInbound?: (sessionId: string, message: IncomingMessage) => void
-  /**
-   * Chatbot replies set `typing` and get a "typing…" pause before sending.
-   * `null` disables the simulation without changing callers.
-   */
-  typing?: TypingTiming | null
   logger?: Logger
 }
 
@@ -71,7 +62,7 @@ export class SessionManager {
    * Start pairing, or return the session that is already running. An
    * in-progress session is never torn down here: a second "Connect" click,
    * or one landing while a boot restore is still handshaking, used to kill
-   * the live socket and race a new one over the same credential files.
+   * the live socket and race a new one over the same credentials.
    */
   async startSession(sessionId: string): Promise<ActiveSession> {
     const existing = this.sessions.get(sessionId)
@@ -81,16 +72,13 @@ export class SessionManager {
       this.sessions.delete(sessionId)
     }
 
+    this.options.authStore.ensureSession(sessionId)
     const engine = new BaileysAdapter({
       sessionId,
-      authDir: this.options.authDir,
+      authStore: this.options.authStore,
       logger: this.log,
-      ...(this.options.pairingTimeoutMs !== undefined
-        ? { pairingTimeoutMs: this.options.pairingTimeoutMs }
-        : {}),
-      ...(this.options.inboundMediaMaxBytes !== undefined
-        ? { inboundMediaMaxBytes: this.options.inboundMediaMaxBytes }
-        : {}),
+      pairingTimeoutMs: this.options.settings.session.pairingTimeoutMs,
+      inboundMediaMaxBytes: this.options.settings.inbound.mediaMaxBytes,
     })
     const session: ActiveSession = { sessionId, engine, status: 'initializing' }
     this.sessions.set(sessionId, session)
@@ -100,6 +88,7 @@ export class SessionManager {
         onStatusChange: (status, reason) => {
           session.status = status
           session.lastStatusReason = reason
+          this.options.authStore.setStatus(sessionId, status, reason)
           if (status !== 'qr_ready') {
             session.qrCode = undefined
             session.qrDataUrl = undefined
@@ -116,6 +105,7 @@ export class SessionManager {
       })
       .catch((err: unknown) => {
         this.log.error({ err, sessionId }, 'session failed to start')
+        this.options.authStore.setStatus(sessionId, 'failed', 'start_failed')
       })
 
     return session
@@ -129,14 +119,14 @@ export class SessionManager {
   isKnown(sessionId: string): boolean {
     const session = this.sessions.get(sessionId)
     if (session && IN_PROGRESS.has(session.status)) return true
-    return hasPairedCreds(getAuthBaseDir(this.options.authDir), sessionId)
+    return this.options.authStore.hasPairedCreds(sessionId)
   }
 
   /** Sends through a ready session; null while it is not ready. */
   send(sessionId: string, to: string, message: OutboxMessage): Promise<MessageResult> | null {
     const session = this.sessions.get(sessionId)
     if (!session || session.status !== 'ready') return null
-    const typing = this.options.typing
+    const typing = this.options.settings.typing
     if (message.typing && typing) {
       return this.sendWithTyping(session, to, message, typing)
     }
@@ -202,20 +192,18 @@ export class SessionManager {
       await session.engine.logout()
       this.sessions.delete(sessionId)
     }
-    // No live socket (not restored yet, or failed and dropped): the creds on
-    // disk must still go, or the next boot restore silently re-links it.
-    clearSessionDir(getAuthBaseDir(this.options.authDir), sessionId)
+    // No live socket (not restored yet, or failed and dropped): the creds in
+    // SQLite must still go, or the next boot restore silently re-links it.
+    this.options.authStore.clearSession(sessionId)
   }
 
   /**
    * Follow a tenant slug rename (the session id is the slug). The socket is
-   * closed, the credential dir moved, and the session reconnected under its
+   * closed, the credential row moved, and the session reconnected under its
    * new id — no re-scan needed.
    */
   async renameSession(from: string, to: string): Promise<void> {
-    const baseDir = getAuthBaseDir(this.options.authDir)
-    const target = path.join(baseDir, to)
-    if (this.sessions.has(to) || existsSync(target)) {
+    if (this.sessions.has(to) || this.options.authStore.hasSession(to)) {
       throw new Error(`A session named "${to}" already exists.`)
     }
 
@@ -226,10 +214,9 @@ export class SessionManager {
       this.sessions.delete(from)
     }
 
-    const source = path.join(baseDir, from)
-    if (existsSync(source)) renameSync(source, target)
+    this.options.authStore.renameSession(from, to)
 
-    if (wasRunning || hasPairedCreds(baseDir, to)) await this.startSession(to)
+    if (wasRunning || this.options.authStore.hasPairedCreds(to)) await this.startSession(to)
   }
 
   listSessions(): SessionSummary[] {
@@ -240,29 +227,27 @@ export class SessionManager {
     }))
   }
 
+  /** Every session row in SQLite, for the console and boot restore. */
+  listStoredSessions(): StoredSessionInfo[] {
+    return this.options.authStore.listSessions()
+  }
+
   /**
    * Reconnect every previously-paired session after a (container) restart.
-   * Half-paired directories (QR shown, never scanned) are skipped — they need
-   * a fresh scan anyway. Restores are staggered so N sessions don't handshake
+   * Half-paired rows (QR shown, never scanned) are skipped — they need a
+   * fresh scan anyway. Restores are staggered so N sessions don't handshake
    * WA servers at once.
    */
   async restoreSessions(options?: {
     delayMs?: number
   }): Promise<{ restored: string[]; skipped: string[] }> {
-    const baseDir = getAuthBaseDir(this.options.authDir)
-    const delayMs = options?.delayMs ?? 1_500
+    const delayMs = options?.delayMs ?? this.options.settings.session.restoreDelayMs
     const restored: string[] = []
     const skipped: string[] = []
 
-    if (!existsSync(baseDir)) return { restored, skipped }
-
-    const candidates = readdirSync(baseDir, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory() && /^[a-zA-Z0-9_-]+$/.test(entry.name))
-      .map((entry) => entry.name)
-      .sort()
-
+    const candidates = this.options.authStore.listSessionIds().sort()
     for (const sessionId of candidates) {
-      if (!hasPairedCreds(baseDir, sessionId)) {
+      if (!this.options.authStore.hasPairedCreds(sessionId)) {
         skipped.push(sessionId)
         continue
       }
@@ -279,7 +264,7 @@ export class SessionManager {
     return { restored, skipped }
   }
 
-  /** Graceful shutdown: close sockets but KEEP auth files so boot restores. */
+  /** Graceful shutdown: close sockets but KEEP auth rows so boot restores. */
   async shutdown(): Promise<void> {
     await Promise.all(
       Array.from(this.sessions.values()).map((session) =>

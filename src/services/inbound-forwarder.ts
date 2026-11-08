@@ -16,15 +16,13 @@ import { webhookUrlFor } from '../lib/callbacks.js'
 import { silentLogger, type Logger } from '../lib/logger.js'
 import { maskPhone } from '../lib/phone.js'
 import type { MediaStore } from './media-store.js'
-
-const DEFAULT_TIMEOUT_MS = 3_000
+import type { RuntimeSettings } from './settings-store.js'
 
 export interface InboundForwarderOptions {
-  /** Raw `WHATSAPP_INBOUND_URL`; null/empty disables forwarding. */
-  urlTemplate: string | null
+  /** Live runtime settings; the console can change the callback URL. */
+  settings: RuntimeSettings
   /** Shared secret the webhook verifies (`WHATSAPP_API_KEY`). */
   apiKey: string
-  timeoutMs?: number
   /**
    * Where downloaded customer media is spooled. The webhook fetches it by id;
    * without a store the message is still forwarded with `hasMedia` only.
@@ -36,13 +34,11 @@ export interface InboundForwarderOptions {
 export type InboundForwarder = (sessionId: string, message: IncomingMessage) => Promise<void>
 
 export function createInboundForwarder(options: InboundForwarderOptions): InboundForwarder {
-  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
   const log = options.logger ?? silentLogger
 
   return async (sessionId, message) => {
-    const url = options.urlTemplate
-      ? webhookUrlFor(options.urlTemplate, sessionId, 'whatsapp')
-      : null
+    const config = options.settings.inbound
+    const url = config.urlTemplate ? webhookUrlFor(config.urlTemplate, sessionId, 'whatsapp') : null
     if (!url) return
 
     let media: Record<string, unknown> | undefined
@@ -90,7 +86,7 @@ export function createInboundForwarder(options: InboundForwarderOptions): Inboun
           hasMedia: message.hasMedia ?? false,
           ...(media ? { media } : {}),
         }),
-        signal: AbortSignal.timeout(timeoutMs),
+        signal: AbortSignal.timeout(config.timeoutMs),
       })
 
       if (!response.ok && response.status !== 409) {

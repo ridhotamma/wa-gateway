@@ -1,15 +1,21 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 
 import { loadConfig, type Config } from '../config.js'
+import { openDatabase, type SqliteDatabase } from '../db/database.js'
+import { SqliteWhatsAppAuthStore } from '../db/whatsapp-auth-store.js'
 import { silentLogger } from '../lib/logger.js'
+import { ApiKeyStore } from '../services/api-key-store.js'
+import { AuditLog } from '../services/audit-log.js'
+import { ConsoleAuthStore } from '../services/console-auth.js'
 import { DirectSender } from '../services/direct-send.js'
 import { MediaStore } from '../services/media-store.js'
 import { Outbox } from '../services/outbox.js'
 import { SessionManager } from '../services/session-manager.js'
+import { SettingsStore, settingsFromConfig } from '../services/settings-store.js'
 import { createApp } from './app.js'
 
 const API_KEY = 'test-secret'
@@ -17,8 +23,11 @@ const AUTH = { authorization: `Bearer ${API_KEY}` }
 
 let dir: string
 let config: Config
+let db: SqliteDatabase
+let authStore: SqliteWhatsAppAuthStore
 let sessions: SessionManager
 let outbox: Outbox
+let apiKeys: ApiKeyStore
 let app: ReturnType<typeof createApp>
 
 beforeEach(() => {
@@ -27,38 +36,49 @@ beforeEach(() => {
     {
       NODE_ENV: 'test',
       WHATSAPP_API_KEY: API_KEY,
-      WHATSAPP_AUTH_DIR: path.join(dir, 'sessions'),
-      WHATSAPP_OUTBOX_DIR: path.join(dir, 'outbox'),
+      WHATSAPP_DATABASE_PATH: path.join(dir, 'gateway.db'),
       WHATSAPP_MEDIA_DIR: path.join(dir, 'media'),
+      WHATSAPP_CONSOLE_EMAIL: 'admin@example.com',
+      WHATSAPP_CONSOLE_PASSWORD: 'a-long-password',
     },
     dir,
   )
 
-  sessions = new SessionManager({ authDir: config.authDir, logger: silentLogger })
-  outbox = new Outbox({ ...config.outbox, dir: config.outboxDir, logger: silentLogger }, sessions)
+  db = openDatabase(':memory:')
+  const settings = new SettingsStore(db, settingsFromConfig(config), silentLogger)
+  const runtime = settings.get()
+  authStore = new SqliteWhatsAppAuthStore(db)
+  apiKeys = new ApiKeyStore(db)
+  const auth = new ConsoleAuthStore(db, config.console.sessionTtlMs)
+  const audit = new AuditLog(db)
+
+  sessions = new SessionManager({ authStore, settings: runtime, logger: silentLogger })
+  outbox = new Outbox({ db, settings: runtime, logger: silentLogger }, sessions)
   outbox.start()
 
   app = createApp({
     config,
     logger: silentLogger,
     instanceId: 'test-instance',
+    settings,
     sessions,
     outbox,
-    mediaStore: new MediaStore(config.mediaDir),
+    mediaStore: new MediaStore(config.mediaDir, db, runtime),
     directSender: new DirectSender({ sessions, outbox, logger: silentLogger }),
+    apiKeys,
+    auth,
+    audit,
   })
 
   // A tenant with completed pairing credentials is "known" without
   // reconnecting its socket.
-  mkdirSync(path.join(config.authDir, 'shop'), { recursive: true })
-  writeFileSync(
-    path.join(config.authDir, 'shop', 'creds.json'),
-    JSON.stringify({ me: { id: '6281234567890:1@s.whatsapp.net' } }),
-  )
+  authStore.ensureSession('shop')
+  authStore.saveCreds('shop', JSON.stringify({ me: { id: '6281234567890:1@s.whatsapp.net' } }))
 })
 
-afterEach(() => {
-  outbox.stop()
+afterEach(async () => {
+  await outbox.stop()
+  db.close()
   rmSync(dir, { recursive: true, force: true })
 })
 
@@ -98,6 +118,20 @@ describe('authentication', () => {
       headers: { 'x-api-key': API_KEY },
     })
     expect(response.status).toBe(200)
+  })
+
+  test('accepts a console-created key and rejects it after revoke', async () => {
+    const created = apiKeys.create('checkout')
+    const accepted = await app.request('/sessions/shop/status', {
+      headers: { 'x-api-key': created.key },
+    })
+    expect(accepted.status).toBe(200)
+
+    apiKeys.revoke(created.record.id)
+    const rejected = await app.request('/sessions/shop/status', {
+      headers: { 'x-api-key': created.key },
+    })
+    expect(rejected.status).toBe(401)
   })
 })
 
@@ -246,7 +280,7 @@ describe('direct messages', () => {
 })
 
 describe('fallback', () => {
-  test('unknown routes answer a JSON 404', async () => {
+  test('unknown API routes answer a JSON 404', async () => {
     const response = await app.request('/nope', { headers: AUTH })
     expect(response.status).toBe(404)
     expect(await response.json()).toEqual({ ok: false, error: 'Not found' })

@@ -6,9 +6,7 @@ coverage/
 .env
 .env.*
 !.env.example
-.whatsapp-sessions/
-.whatsapp-outbox/
-.whatsapp-media/
+.whatsapp-data/
 .data/
 *.log
 .DS_Store

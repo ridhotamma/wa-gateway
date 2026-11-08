@@ -1,14 +1,15 @@
+import { fileURLToPath } from 'node:url'
+
+import { serveStatic } from '@hono/node-server/serve-static'
 import { Hono } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
 import { HTTPException } from 'hono/http-exception'
 import { secureHeaders } from 'hono/secure-headers'
 
-import type { Config } from '../config.js'
-import type { Logger } from '../lib/logger.js'
-import type { DirectSender } from '../services/direct-send.js'
-import type { MediaStore } from '../services/media-store.js'
-import type { Outbox } from '../services/outbox.js'
-import type { SessionManager } from '../services/session-manager.js'
+import { htmlPage } from '../console/auth.js'
+import { renderNotFound } from '../console/pages/auth-pages.js'
+import { createConsoleApp } from '../console/router.js'
+import type { ConsoleDependencies } from '../console/types.js'
 import { HttpError } from './errors.js'
 import { authMiddleware } from './middleware/auth.js'
 import { requestContext } from './middleware/request-context.js'
@@ -25,14 +26,10 @@ import type { AppEnv } from './types.js'
  */
 export const MAX_BODY_BYTES = 8 * 1024 * 1024
 
-export interface AppDependencies {
-  config: Config
-  logger: Logger
+const PUBLIC_DIR = fileURLToPath(new URL('../../public', import.meta.url))
+
+export interface AppDependencies extends ConsoleDependencies {
   instanceId: string
-  sessions: SessionManager
-  outbox: Outbox
-  mediaStore: MediaStore
-  directSender: DirectSender
 }
 
 export function createApp(dependencies: AppDependencies): Hono<AppEnv> {
@@ -48,6 +45,18 @@ export function createApp(dependencies: AppDependencies): Hono<AppEnv> {
     }),
   )
 
+  // Polaris-style console fonts and favicon. Everything else is inline.
+  app.use('/fonts/*', serveStatic({ root: PUBLIC_DIR }))
+  app.use('/favicon.svg', serveStatic({ root: PUBLIC_DIR }))
+
+  // The console has its own cookie/email/password auth; do not put it behind
+  // the API key middleware. The catch-all keeps unknown console URLs as HTML
+  // instead of falling through to the API's 401.
+  app.route('/console', createConsoleApp(dependencies))
+  app.all('/console/*', () =>
+    htmlPage(String(renderNotFound('Page not found', 'The console page may have moved.')), 404),
+  )
+
   // Public liveness. The handler exposes session inventory only when the
   // caller presents the shared secret.
   app.route(
@@ -56,12 +65,19 @@ export function createApp(dependencies: AppDependencies): Hono<AppEnv> {
       config: dependencies.config,
       sessions: dependencies.sessions,
       outbox: dependencies.outbox,
+      apiKeys: dependencies.apiKeys,
       instanceId: dependencies.instanceId,
     }),
   )
 
   // Everything else requires the shared secret (when configured).
-  app.use('*', authMiddleware(dependencies.config.apiKey))
+  app.use(
+    '*',
+    authMiddleware({
+      envKey: dependencies.config.apiKey,
+      keys: dependencies.apiKeys,
+    }),
+  )
 
   app.route(
     '/sessions',

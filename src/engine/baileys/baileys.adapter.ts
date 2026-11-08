@@ -19,9 +19,9 @@ import type {
   PresenceState,
   WhatsAppEngine,
 } from '../types.js'
+import { getBaileysAuthState, type WhatsAppAuthStore } from './auth-state.js'
 import { closeAction } from './close-policy.js'
 import { extractInboundMessage } from './inbound.js'
-import { getBaileysAuthState, type BaileysSessionConfig } from './session-store.js'
 import {
   sendBaileysButtons,
   sendBaileysMedia,
@@ -29,7 +29,10 @@ import {
   sendBaileysText,
 } from './messaging.js'
 
-export interface BaileysEngineOptions extends BaileysSessionConfig {
+export interface BaileysEngineOptions {
+  sessionId: string
+  /** Credential and signal-key storage (SQLite in the daemon). */
+  authStore: WhatsAppAuthStore
   /** Service logger. A silent one is used when omitted (tests, scripts). */
   logger?: Logger
   /** Baileys' own protocol log. Silent by default; very noisy when raised. */
@@ -68,7 +71,6 @@ export class BaileysAdapter implements WhatsAppEngine {
   private status: EngineStatus = 'disconnected'
   private callbacks: EngineEventCallbacks = {}
   private stopped = false
-  private clearSessionFn: (() => void) | null = null
   /** Bumped per socket so events from a replaced socket are ignored. */
   private generation = 0
   private reconnectAttempts = 0
@@ -96,8 +98,10 @@ export class BaileysAdapter implements WhatsAppEngine {
     this.updateStatus('initializing')
 
     try {
-      const { state, saveCreds, clearSession } = await getBaileysAuthState(this.options)
-      this.clearSessionFn = clearSession
+      const { state, saveCreds } = await getBaileysAuthState(
+        this.options.authStore,
+        this.options.sessionId,
+      )
       this.paired = Boolean(state.creds.me?.id)
 
       const logger = pino({ level: this.options.baileysLogLevel ?? 'silent' })
@@ -218,7 +222,7 @@ export class BaileysAdapter implements WhatsAppEngine {
       case 'terminal':
         this.stopped = true
         this.clearPairingTimeout()
-        if (action.clearCreds) this.clearSessionFn?.()
+        if (action.clearCreds) this.options.authStore.clearSession(this.options.sessionId)
         this.updateStatus(action.status, action.reason)
         return
 
@@ -249,7 +253,7 @@ export class BaileysAdapter implements WhatsAppEngine {
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer)
     this.reconnectTimer = null
     if (this.socket) this.detachSocket(this.socket, true)
-    this.clearSessionFn?.()
+    this.options.authStore.clearSession(this.options.sessionId)
     this.updateStatus('failed', reason)
   }
 
@@ -332,7 +336,7 @@ export class BaileysAdapter implements WhatsAppEngine {
       await sock.logout().catch(() => {})
       this.detachSocket(sock, true)
     }
-    this.clearSessionFn?.()
+    this.options.authStore.clearSession(this.options.sessionId)
     this.updateStatus('disconnected', 'logged_out')
   }
 

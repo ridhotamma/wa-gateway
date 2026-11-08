@@ -7,10 +7,22 @@ describe('loadConfig', () => {
     const config = loadConfig({}, '/srv/wa-gateway')
     expect(config.nodeEnv).toBe('development')
     expect(config.port).toBe(3005)
-    expect(config.authDir).toBe('/srv/wa-gateway/.whatsapp-sessions')
-    expect(config.outboxDir).toBe('/srv/wa-gateway/.whatsapp-outbox')
-    expect(config.mediaDir).toBe('/srv/wa-gateway/.whatsapp-media')
+    expect(config.databasePath).toBe('/srv/wa-gateway/.whatsapp-data/gateway.db')
+    expect(config.mediaDir).toBe('/srv/wa-gateway/.whatsapp-data/media')
     expect(config.typing).not.toBeNull()
+    expect(config.console.enabled).toBe(true)
+    expect(config.console.sessionTtlMs).toBe(7 * 24 * 60 * 60_000)
+  })
+
+  test('reads the console bootstrap admin', () => {
+    const config = loadConfig({
+      WHATSAPP_CONSOLE_EMAIL: 'Admin@Example.com',
+      WHATSAPP_CONSOLE_PASSWORD: 'a-long-password',
+      WHATSAPP_CONSOLE_SESSION_HOURS: '12',
+    })
+    expect(config.console.email).toBe('admin@example.com')
+    expect(config.console.password).toBe('a-long-password')
+    expect(config.console.sessionTtlMs).toBe(12 * 60 * 60_000)
   })
 
   test('refuses to start production without an API key', () => {

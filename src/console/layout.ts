@@ -1,0 +1,184 @@
+/**
+ * Console chrome, after Shopify Polaris: light canvas, one light sidebar,
+ * white cards, a page header with one primary action, index tables and tone
+ * badges. Server-rendered; the only JavaScript is a few tiny helpers.
+ */
+import { DIALOG_SCRIPT, confirmDialog } from './dialog.js'
+import { html, raw, type Html } from './html.js'
+import { CONSOLE_CSS } from './styles.js'
+import { alert, avatar, icon, tile, type IconName } from './ui.js'
+
+export interface ConsoleNav {
+  section: string
+  admin: string
+}
+
+export type Flash = { tone: 'success' | 'critical' | 'warning' | 'info'; text: string } | null
+
+const NAV: Array<[string, string, string, IconName]> = [
+  ['overview', 'Overview', '/console', 'house'],
+  ['sessions', 'Sessions', '/console/sessions', 'users'],
+  ['notifications', 'Notifications', '/console/notifications', 'lightning'],
+  ['api-keys', 'API keys', '/console/api-keys', 'key'],
+  ['settings', 'Settings', '/console/settings', 'gear-six'],
+  ['activity', 'Activity', '/console/activity', 'chart-bar'],
+  ['security', 'Security', '/console/security', 'warning-circle'],
+]
+
+function flashParts(flash?: Flash) {
+  return {
+    banner: flash && flash.tone !== 'success' ? alert(flash.tone, html`${flash.text}`) : '',
+    toast:
+      flash?.tone === 'success'
+        ? html`<div class="toast" role="status">
+            ${icon('check-circle')}<span>${flash.text}</span>
+          </div>`
+        : '',
+  }
+}
+
+const CLEAR_FLASH = html`<script>
+  {
+    const url = new URL(location.href)
+    url.searchParams.delete('ok')
+    url.searchParams.delete('err')
+    history.replaceState(history.state, '', url.pathname + url.search + url.hash)
+  }
+</script>`
+
+export function shell(title: string, nav: ConsoleNav, body: Html, flash?: Flash): Html {
+  const link = ([key, label, href, name]: [string, string, string, IconName]) =>
+    html`<a
+      href="${href}"
+      class="${nav.section === key ? 'on' : ''}"
+      data-tooltip="${label}"
+      aria-label="${label}"
+      >${icon(name)}<span>${label}</span></a
+    >`
+  const { banner, toast } = flashParts(flash)
+
+  return html`<!doctype html>
+    <html lang="en">
+      <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width,initial-scale=1" />
+        <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+        <title>${title} · wa-gateway</title>
+        <style>
+          ${raw(CONSOLE_CSS)}
+        </style>
+        <script>
+          try {
+            if (localStorage.getItem('wa-gateway-nav') === 'collapsed')
+              document.documentElement.classList.add('nav-collapsed')
+          } catch (e) {}
+        </script>
+      </head>
+      <body>
+        <input type="checkbox" id="nav-toggle" aria-hidden="true" />
+        <label for="nav-toggle" class="scrim" aria-hidden="true"></label>
+        <div class="topbar">
+          <label for="nav-toggle" aria-label="Menu">${icon('list', 20)}</label>
+          <div class="brand">${tile('W', 'wa-gateway', 'sm')}<span>wa-gateway</span></div>
+        </div>
+        <div class="frame">
+          <nav class="nav">
+            <div class="nav-head">
+              <a class="switcher-btn" href="/console" style="text-decoration:none">
+                ${tile('W', 'wa-gateway')}
+                <span class="switcher-text"
+                  ><span class="switcher-org">WhatsApp gateway</span><b>wa-gateway</b></span
+                >
+              </a>
+              <button
+                type="button"
+                class="nav-toggle"
+                data-nav-toggle
+                data-tooltip="Toggle sidebar"
+                aria-label="Toggle sidebar"
+              >
+                <span class="nav-collapse-icon">${icon('caret-double-left')}</span
+                ><span class="nav-expand-icon">${icon('caret-double-right')}</span>
+              </button>
+            </div>
+            ${NAV.map(link)}
+            <div class="foot">
+              ${avatar(nav.admin)}<span class="nav-admin" title="${nav.admin}">${nav.admin}</span>
+              <form
+                method="post"
+                action="/console/logout"
+                class="inline"
+                data-confirm="Sign out of the console?"
+                data-confirm-label="Sign out"
+              >
+                <button class="icon-btn" data-tooltip="Sign out" aria-label="Sign out">
+                  ${icon('sign-out')}
+                </button>
+              </form>
+            </div>
+          </nav>
+          <main>${banner} ${body} ${toast} ${flash ? CLEAR_FLASH : ''}</main>
+        </div>
+        <div id="nav-tooltip" class="nav-tooltip" role="tooltip" hidden></div>
+        ${confirmDialog()}
+        <script>
+          ${raw(DIALOG_SCRIPT)}
+        </script>
+        <script>
+          ${raw(CONSOLE_SCRIPT)}
+        </script>
+      </body>
+    </html>`
+}
+
+/** Auth pages: one card on the canvas, no sidebar. */
+export function bare(title: string, body: Html): Html {
+  return html`<!doctype html>
+    <html lang="en">
+      <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width,initial-scale=1" />
+        <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+        <title>${title} · wa-gateway</title>
+        <style>
+          ${raw(CONSOLE_CSS)}
+        </style>
+      </head>
+      <body>
+        <main class="select-main">
+          <div class="auth">
+            <div class="brand">${tile('W', 'wa-gateway')}<span>wa-gateway</span></div>
+            ${body}
+          </div>
+        </main>
+        <script>
+          ${raw(DIALOG_SCRIPT)}
+        </script>
+        <script>
+          ${raw(CONSOLE_SCRIPT)}
+        </script>
+      </body>
+    </html>`
+}
+
+const CONSOLE_SCRIPT = `
+(() => {
+  if (window.__waGatewayConsole) return
+  window.__waGatewayConsole = true
+
+  // Submit once: a second click cannot queue a second POST. The native
+  // constraint validation has already run by the time this event fires.
+  document.addEventListener('submit', (event) => {
+    if (event.defaultPrevented) return
+    const form = event.target instanceof HTMLFormElement ? event.target : null
+    if (!form || form.dataset.busy === 'off') return
+    const submitter = event.submitter ?? form.querySelector('button[type="submit"], button:not([type])')
+    if (!(submitter instanceof HTMLButtonElement)) return
+    if (submitter.dataset.busy === 'off') return
+    setTimeout(() => {
+      submitter.setAttribute('aria-busy', 'true')
+      submitter.disabled = true
+    }, 0)
+  })
+})()
+`

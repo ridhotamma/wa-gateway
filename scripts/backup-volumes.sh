@@ -1,9 +1,14 @@
 #!/usr/bin/env sh
-# Snapshot the WhatsApp daemon's volumes (paired sessions, queued outbox,
-# Caddy certs). The sessions volume is the only copy of every seller's
-# pairing: lose it and every seller has to re-scan a QR code.
+# Snapshot the gateway database and media spool plus Caddy certificates.
 #
-# Run on the WhatsApp host from cron, e.g. every 6 hours:
+# The SQLite file is the only copy of every seller's WhatsApp pairing, the API
+# keys, console admins and queued notifications. Losing it means every seller
+# has to scan a QR code again and every integration needs a new API key.
+#
+# The database copy is made with better-sqlite3's online backup API inside the
+# running container (WAL-safe); media and Caddy data are tarred read-only.
+#
+# Run on the gateway host from cron, e.g. every 6 hours:
 #   0 */6 * * * /opt/wa-gateway/scripts/backup-volumes.sh >> /var/log/wa-gateway-backup.log 2>&1
 #
 # Environment:
@@ -57,7 +62,10 @@ heartbeat_exit() {
 }
 trap heartbeat_exit EXIT
 
+cd "$(dirname "$0")/.."
+
 PROJECT=wa-gateway
+SERVICE=gateway
 BACKUP_DIR=${BACKUP_DIR:-/var/backups/wa-gateway}
 BACKUP_KEEP_DAYS=${BACKUP_KEEP_DAYS:-14}
 STAMP=$(date -u +%Y%m%dT%H%M%SZ)
@@ -66,15 +74,20 @@ ARCHIVE="$BACKUP_DIR/wa-gateway-$STAMP.tar.gz"
 umask 077
 mkdir -p "$BACKUP_DIR"
 
-# Read-only mounts: the daemon keeps running. Baileys writes creds with
-# whole-file writes, so a snapshot is consistent per file.
+# 1. A consistent SQLite snapshot inside the volume.
+docker compose exec -T "$SERVICE" sh -c \
+  'mkdir -p /data/backups && rm -f /data/backups/gateway.db && node dist/cli/backup.js /data/backups/gateway.db'
+
+# 2. Archive the snapshot, media and Caddy state read-only while the daemon runs.
 docker run --rm \
-  -v "${PROJECT}_whatsapp-sessions:/backup/sessions:ro" \
-  -v "${PROJECT}_whatsapp-outbox:/backup/outbox:ro" \
-  -v "${PROJECT}_caddy-data:/backup/caddy-data:ro" \
+  -v "${PROJECT}_whatsapp-data:/data:ro" \
+  -v "${PROJECT}_caddy-data:/caddy:ro" \
   -v "$BACKUP_DIR:/out" \
   alpine:3 \
-  tar -czf "/out/wa-gateway-$STAMP.tar.gz" -C /backup .
+  tar -czf "/out/wa-gateway-$STAMP.tar.gz" -C /data backups/gateway.db media -C /caddy .
+
+# 3. Do not leave a second copy of the live database in the volume.
+docker compose exec -T "$SERVICE" rm -f /data/backups/gateway.db
 
 chmod 600 "$ARCHIVE"
 echo "[backup] wrote $ARCHIVE ($(du -h "$ARCHIVE" | cut -f1))"
@@ -89,9 +102,12 @@ fi
 
 find "$BACKUP_DIR" -name 'wa-gateway-*.tar.gz' -mtime +"$BACKUP_KEEP_DAYS" -delete
 
-# Restore (daemon stopped), from the wa-gateway repo root:
+# Restore (gateway stopped), from the wa-gateway repo root:
 #   docker compose stop gateway
-#   docker run --rm -v wa-gateway_whatsapp-sessions:/r/sessions \
-#     -v wa-gateway_whatsapp-outbox:/r/outbox -v "$BACKUP_DIR:/in:ro" alpine:3 \
-#     sh -c 'tar -xzf /in/wa-gateway-<STAMP>.tar.gz -C /r ./sessions ./outbox && chown -R 1000:1000 /r'
+#   docker run --rm -v wa-gateway_whatsapp-data:/data -v "$BACKUP_DIR:/in:ro" alpine:3 \
+#     sh -c 'tar -xzf /in/wa-gateway-<STAMP>.tar.gz -C /data ./backups/gateway.db ./media \
+#            && rm -f /data/gateway.db /data/gateway.db-wal /data/gateway.db-shm \
+#            && mv /data/backups/gateway.db /data/gateway.db && chown -R 1000:1000 /data'
 #   docker compose start gateway
+#
+# The Caddy archive member is at the root of the tar (certificates and config).

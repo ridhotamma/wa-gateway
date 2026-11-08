@@ -2,21 +2,24 @@
 #
 # This service is deployed on its own: it is not a website, it keeps
 # per-seller socket state, and the host stores every paired seller's WhatsApp
-# credentials.
+# credentials in SQLite.
 #
-# DATA RESIDENCY: the host stores WhatsApp credentials and queues customer
+# DATA RESIDENCY: the host stores WhatsApp credentials and queued customer
 # phone numbers and order details. Run it in the region your privacy policy
 # commits to (ap-southeast-1 for Pesanle). Do not move it casually.
 #
 # One-time setup on the host (repo already cloned, DNS A record pointing here):
 #   1. Create .env (gitignored) with WHATSAPP_API_KEY
-#      (openssl rand -hex 32), WHATSAPP_DOMAIN and the other variables
+#      (openssl rand -hex 32), WHATSAPP_CONSOLE_EMAIL,
+#      WHATSAPP_CONSOLE_PASSWORD, WHATSAPP_DOMAIN and the other variables
 #      listed in .env.example.
 #   2. From the repo root: docker compose up -d --build
 #   3. Schedule scripts/backup-volumes.sh (see its header).
 #
-# Sessions survive restarts via the whatsapp-sessions volume + boot restore;
-# queued notifications survive via the whatsapp-outbox volume.
+# Everything durable lives in the whatsapp-data volume: gateway.db (settings,
+# API keys, console admins/sessions, outbox, WhatsApp credentials, audit) and
+# the transient media spool. Back it up.
+#
 # SINGLE REPLICA ONLY — sessions are in-process sockets, and two daemons on
 # one set of credentials kick each other off (close code 440).
 name: wa-gateway
@@ -38,14 +41,11 @@ services:
       - .env
     environment:
       NODE_ENV: production
-      WHATSAPP_AUTH_DIR: /data/sessions
-      WHATSAPP_OUTBOX_DIR: /data/outbox
+      WHATSAPP_DATABASE_PATH: /data/gateway.db
       WHATSAPP_MEDIA_DIR: /data/media
       WHATSAPP_RESTORE_DELAY_MS: '2000' # gentler on small boxes at boot
     volumes:
-      - whatsapp-sessions:/data/sessions # paired-seller credentials — back up!
-      - whatsapp-outbox:/data/outbox # queued notifications
-      - whatsapp-media:/data/media # transient inbound attachments (24h)
+      - whatsapp-data:/data # SQLite + media — back up!
     networks:
       - edge
     logging:
@@ -65,7 +65,7 @@ services:
       WHATSAPP_DOMAIN: ${WHATSAPP_DOMAIN}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy-data:/data # ACME certs — back up alongside sessions
+      - caddy-data:/data # ACME certs — back up alongside the database
       - caddy-config:/config
     networks:
       - edge
@@ -74,8 +74,6 @@ networks:
   edge:
 
 volumes:
-  whatsapp-sessions:
-  whatsapp-outbox:
-  whatsapp-media:
+  whatsapp-data:
   caddy-data:
   caddy-config:

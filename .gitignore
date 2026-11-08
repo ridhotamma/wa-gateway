@@ -3,10 +3,8 @@ dist/
 coverage/
 *.tsbuildinfo
 
-# Runtime state: paired credentials, queued messages, inbound attachments.
-.whatsapp-sessions/
-.whatsapp-outbox/
-.whatsapp-media/
+# Runtime state: SQLite database and the inbound attachment spool.
+.whatsapp-data/
 .data/
 
 # Secrets

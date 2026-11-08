@@ -13,30 +13,25 @@
 import { webhookUrlFor } from '../lib/callbacks.js'
 import { silentLogger, type Logger } from '../lib/logger.js'
 import type { OutboxSettlement } from './outbox.js'
-
-const DEFAULT_TIMEOUT_MS = 3_000
+import type { RuntimeSettings } from './settings-store.js'
 
 export interface StatusReporterOptions {
-  /**
-   * Full template with `{sessionId}` or a base origin. Null/empty disables
-   * reporting.
-   */
-  urlTemplate: string | null
+  /** Live runtime settings; the console can change the callback URL. */
+  settings: RuntimeSettings
   /** Shared secret the webhook verifies (`WHATSAPP_API_KEY`). */
   apiKey: string
-  timeoutMs?: number
   logger?: Logger
 }
 
 export type StatusReporter = (event: OutboxSettlement) => Promise<void>
 
 export function createStatusReporter(options: StatusReporterOptions): StatusReporter {
-  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
   const log = options.logger ?? silentLogger
 
   return async (event) => {
-    if (!options.urlTemplate) return
-    const url = webhookUrlFor(options.urlTemplate, event.sessionId, 'whatsapp-status')
+    const config = options.settings.inbound
+    if (!config.statusUrlTemplate) return
+    const url = webhookUrlFor(config.statusUrlTemplate, event.sessionId, 'whatsapp-status')
     if (!url) return
 
     try {
@@ -53,7 +48,7 @@ export function createStatusReporter(options: StatusReporterOptions): StatusRepo
           ...(event.messageId ? { messageId: event.messageId } : {}),
           ...(event.reason ? { reason: event.reason } : {}),
         }),
-        signal: AbortSignal.timeout(timeoutMs),
+        signal: AbortSignal.timeout(config.statusTimeoutMs),
       })
 
       if (!response.ok) {

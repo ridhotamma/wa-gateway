@@ -1,57 +1,19 @@
 import { createHash } from 'node:crypto'
-import {
-  existsSync,
-  mkdirSync,
-  readdirSync,
-  readFileSync,
-  renameSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from 'node:fs'
-import path from 'node:path'
+
+import type { SqliteDatabase } from '../db/database.js'
 import { PermanentSendError, type MessageResult } from '../engine/index.js'
 import { silentLogger, type Logger } from '../lib/logger.js'
 import { maskPhone } from '../lib/phone.js'
+import type { RuntimeSettings } from './settings-store.js'
 
 /**
- * Durable, per-session message queue.
+ * Durable, per-session message queue, stored in SQLite.
  *
- * Why it exists: callers (checkout, payment/shipping webhooks) must never
- * block on WhatsApp, and a notification sent while a session is reconnecting
- * used to be rejected and lost. Now a notify call only writes a file; this
- * worker sends it once the session is ready, retrying transient failures and
- * pacing sends so a seller's number doesn't look like a spam bot.
- *
- * Layout under the outbox dir (a volume in production):
- *   pending/<sessionId>/<jobId>.json  full job, includes phone + text
- *   done/<sessionId>/<jobId>.json     idempotency marker only, no PII
- *   failed/<sessionId>/<jobId>.json   masked recipient + error, no text
- * jobId is a hash of the caller's idempotency key, so a webhook delivered
- * twice (or a paid event raised by two code paths) sends one message.
+ * A notify call inserts one row and returns; the worker sends it once the
+ * session is ready, retries transient failures, deduplicates by idempotency
+ * key and paces sends per session. Rows are kept after completion so a repeat
+ * webhook is recognised; personal data is scrubbed when a job settles.
  */
-
-export interface OutboxJob {
-  id: string
-  sessionId: string
-  kind: string
-  /** The caller's key. Optional: jobs written before it was kept lack it. */
-  idempotencyKey?: string
-  to: string
-  text: string
-  /** An attachment queued alongside the text; absent for a text-only job. */
-  media?: OutboxMedia
-  /** Reply buttons queued alongside the text; absent for a text-only job. */
-  buttons?: OutboxButton[]
-  /** Optional line below the buttons. */
-  footer?: string
-  /** Show "typing…" for a moment before this reply is sent. */
-  typing?: boolean
-  createdAt: number
-  attempts: number
-  nextAttemptAt: number
-  lastError?: string
-}
 
 export interface OutboxMedia {
   /** Remote HTTP(S) URL or base64 bytes, matching `MediaInput.data`. */
@@ -75,10 +37,6 @@ export interface OutboxMessage {
   typing?: boolean
 }
 
-/**
- * A job's final outcome, for whoever queued it: `sent` with the WhatsApp
- * message id, or `failed` (including expiry and retry exhaustion) with why.
- */
 export interface OutboxSettlement {
   sessionId: string
   idempotencyKey: string
@@ -95,39 +53,81 @@ export interface OutboxSender {
 }
 
 export interface OutboxOptions {
-  dir: string
-  /** Minimum gap between two sends of one session (ms), plus random jitter. */
-  sendGapMs: number
-  sendJitterMs: number
-  /** Max sends per session per rolling hour, queue and direct sends combined. */
-  hourlyCap: number
-  /** Jobs older than this are dropped: a day-old "paid" message is noise. */
-  maxAgeMs: number
-  maxAttempts: number
-  /** Service logger; tests may omit it. */
+  db: SqliteDatabase
+  /** Live runtime settings; the worker reads the current object on every tick. */
+  settings: RuntimeSettings
   logger?: Logger
   /**
-   * Called once per job with its final outcome, for the platform's message
-   * log. Never awaited and never allowed to break the queue: a settlement
-   * that throws is logged and forgotten.
+   * Called once per job with its final outcome. Never awaited and never
+   * allowed to break the queue: a settlement that throws is logged.
    */
   onSettled?: (event: OutboxSettlement) => void | Promise<void>
+}
+
+export interface OutboxStats {
+  pending: number
+  failedLastDay: number
+}
+
+export interface OutboxTotals extends OutboxStats {
+  sessionsWithPending: number
+  doneLastDay: number
 }
 
 const DONE_RETENTION_MS = 7 * 24 * 60 * 60 * 1000
 const FAILED_RETENTION_MS = 14 * 24 * 60 * 60 * 1000
 const TICK_MS = 1_000
 
-type Bucket = 'pending' | 'done' | 'failed'
+interface OutboxRow {
+  id: string
+  session_id: string
+  idempotency_key: string | null
+  kind: string
+  status: 'pending' | 'done' | 'failed'
+  to_phone: string
+  text: string
+  media_json: string | null
+  buttons_json: string | null
+  footer: string | null
+  typing: number
+  attempts: number
+  next_attempt_at: number
+  last_error: string | null
+  message_id: string | null
+  fail_reason: string | null
+  created_at: number
+  updated_at: number
+  sent_at: number | null
+  failed_at: number | null
+}
+
+interface OutboxJob {
+  id: string
+  sessionId: string
+  idempotencyKey?: string
+  kind: string
+  to: string
+  text: string
+  media?: OutboxMedia
+  buttons?: OutboxButton[]
+  footer?: string
+  typing?: boolean
+  createdAt: number
+  attempts: number
+  nextAttemptAt: number
+  lastError?: string
+}
 
 export class Outbox {
-  private readonly jobs = new Map<string, OutboxJob[]>()
   private readonly inFlight = new Set<string>()
   private readonly nextSendAt = new Map<string, number>()
   private readonly sendLog = new Map<string, number[]>()
   private readonly log: Logger
   private timer: ReturnType<typeof setInterval> | null = null
   private pruneTimer: ReturnType<typeof setInterval> | null = null
+  private ticking = false
+  private stopped = false
+  private readonly pending = new Set<Promise<unknown>>()
 
   constructor(
     private readonly options: OutboxOptions,
@@ -137,20 +137,20 @@ export class Outbox {
   }
 
   start(): void {
-    for (const bucket of ['pending', 'done', 'failed'] as const) {
-      mkdirSync(path.join(this.options.dir, bucket), { recursive: true })
-    }
-    this.load()
+    this.stopped = false
     this.prune()
     this.timer = setInterval(() => void this.tick(), TICK_MS)
     this.pruneTimer = setInterval(() => this.prune(), 60 * 60 * 1000)
   }
 
-  stop(): void {
+  /** Stop timers and wait for sends already in flight to finish their DB write. */
+  async stop(): Promise<void> {
+    this.stopped = true
     if (this.timer) clearInterval(this.timer)
     if (this.pruneTimer) clearInterval(this.pruneTimer)
     this.timer = null
     this.pruneTimer = null
+    await Promise.allSettled([...this.pending])
   }
 
   /** Queue a message. Returns the job id and whether the key was seen before. */
@@ -169,39 +169,38 @@ export class Outbox {
       .update(`${input.sessionId}\0${input.idempotencyKey}`)
       .digest('hex')
       .slice(0, 32)
-
-    const known =
-      this.jobs.get(input.sessionId)?.some((j) => j.id === id) ||
-      existsSync(this.file('done', input.sessionId, id)) ||
-      existsSync(this.file('failed', input.sessionId, id))
-    if (known) return { jobId: id, duplicate: true }
-
     const now = Date.now()
-    const job: OutboxJob = {
-      id,
-      sessionId: input.sessionId,
-      kind: input.kind,
-      idempotencyKey: input.idempotencyKey,
-      to: input.to,
-      text: input.text,
-      ...(input.media ? { media: input.media } : {}),
-      ...(input.buttons?.length ? { buttons: input.buttons } : {}),
-      ...(input.footer ? { footer: input.footer } : {}),
-      ...(input.typing ? { typing: true } : {}),
-      createdAt: now,
-      attempts: 0,
-      nextAttemptAt: now,
-    }
-    this.write('pending', job.sessionId, id, job)
-    const list = this.jobs.get(job.sessionId) ?? []
-    list.push(job)
-    this.jobs.set(job.sessionId, list)
-    return { jobId: id, duplicate: false }
+
+    const result = this.options.db
+      .prepare(
+        `INSERT OR IGNORE INTO outbox_jobs
+          (id, session_id, idempotency_key, kind, status, to_phone, text,
+           media_json, buttons_json, footer, typing, attempts, next_attempt_at,
+           created_at, updated_at)
+         VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`,
+      )
+      .run(
+        id,
+        input.sessionId,
+        input.idempotencyKey,
+        input.kind,
+        input.to,
+        input.text,
+        input.media ? JSON.stringify(input.media) : null,
+        input.buttons?.length ? JSON.stringify(input.buttons) : null,
+        input.footer ?? null,
+        input.typing ? 1 : 0,
+        now,
+        now,
+        now,
+      )
+
+    return { jobId: id, duplicate: result.changes === 0 }
   }
 
   /**
-   * Reserve a send slot for a direct (non-queued) send, e.g. the admin's
-   * test message. Returns the wait in ms when the session is rate limited.
+   * Reserve a send slot for a direct (non-queued) send, e.g. the admin's test
+   * message. Shares the session's hourly budget with the queue.
    */
   reserveDirectSend(sessionId: string): { ok: true } | { ok: false; retryAfterMs: number } {
     const wait = this.waitMs(sessionId)
@@ -210,138 +209,194 @@ export class Outbox {
     return { ok: true }
   }
 
-  stats(sessionId: string): { pending: number; failedLastDay: number } {
-    const pending = this.jobs.get(sessionId)?.length ?? 0
-    const failedDir = path.join(this.options.dir, 'failed', sessionId)
-    let failedLastDay = 0
-    if (existsSync(failedDir)) {
-      const since = Date.now() - 24 * 60 * 60 * 1000
-      for (const name of readdirSync(failedDir)) {
-        try {
-          if (statSync(path.join(failedDir, name)).mtimeMs >= since) failedLastDay += 1
-        } catch {
-          // Pruned meanwhile.
-        }
-      }
+  stats(sessionId: string): OutboxStats {
+    const pending = this.options.db
+      .prepare(
+        "SELECT count(*) AS count FROM outbox_jobs WHERE session_id = ? AND status = 'pending'",
+      )
+      .get(sessionId) as { count: number }
+    const failed = this.options.db
+      .prepare(
+        `SELECT count(*) AS count FROM outbox_jobs
+         WHERE session_id = ? AND status = 'failed' AND failed_at >= ?`,
+      )
+      .get(sessionId, Date.now() - 24 * 60 * 60 * 1000) as { count: number }
+    return { pending: pending.count, failedLastDay: failed.count }
+  }
+
+  totals(): OutboxTotals {
+    const pending = this.options.db
+      .prepare(
+        `SELECT count(*) AS count, count(DISTINCT session_id) AS sessions
+         FROM outbox_jobs WHERE status = 'pending'`,
+      )
+      .get() as { count: number; sessions: number }
+    const since = Date.now() - 24 * 60 * 60 * 1000
+    const failed = this.options.db
+      .prepare(
+        "SELECT count(*) AS count FROM outbox_jobs WHERE status = 'failed' AND failed_at >= ?",
+      )
+      .get(since) as { count: number }
+    const done = this.options.db
+      .prepare("SELECT count(*) AS count FROM outbox_jobs WHERE status = 'done' AND sent_at >= ?")
+      .get(since) as { count: number }
+
+    return {
+      pending: pending.count,
+      sessionsWithPending: pending.sessions,
+      failedLastDay: failed.count,
+      doneLastDay: done.count,
     }
-    return { pending, failedLastDay }
   }
 
-  totals(): { pending: number; sessionsWithPending: number } {
-    let pending = 0
-    for (const list of this.jobs.values()) pending += list.length
-    return { pending, sessionsWithPending: this.jobs.size }
-  }
-
-  /** Follows a tenant slug rename: pending jobs and markers move along. */
+  /** Follows a tenant slug rename; the session id is the slug. */
   renameSession(from: string, to: string): void {
-    for (const bucket of ['pending', 'done', 'failed'] as const) {
-      const src = path.join(this.options.dir, bucket, from)
-      if (existsSync(src)) renameSync(src, path.join(this.options.dir, bucket, to))
-    }
-    const list = this.jobs.get(from)
-    if (list) {
-      for (const job of list) job.sessionId = to
-      this.jobs.delete(from)
-      this.jobs.set(to, list)
-    }
+    this.options.db
+      .prepare('UPDATE outbox_jobs SET session_id = ?, updated_at = ? WHERE session_id = ?')
+      .run(to, Date.now(), from)
   }
 
   private async tick(): Promise<void> {
-    const now = Date.now()
-    for (const [sessionId, list] of this.jobs) {
-      if (list.length === 0 || this.inFlight.has(sessionId)) continue
+    if (this.stopped || this.ticking) return
+    this.ticking = true
+    try {
+      const now = Date.now()
+      const settings = this.options.settings.outbox
+      const rows = this.options.db
+        .prepare(
+          `SELECT * FROM outbox_jobs WHERE status = 'pending'
+           ORDER BY created_at ASC LIMIT 1000`,
+        )
+        .all() as OutboxRow[]
 
-      // Expire before sending: a stale job must not use up the rate budget.
-      while (list[0] && now - list[0].createdAt > this.options.maxAgeMs) {
-        this.fail(list.shift()!, 'expired')
+      const bySession = new Map<string, OutboxRow[]>()
+      for (const row of rows) {
+        const list = bySession.get(row.session_id) ?? []
+        list.push(row)
+        bySession.set(row.session_id, list)
       }
-      if (list.length === 0) {
-        this.jobs.delete(sessionId)
-        continue
-      }
-      const job = list.find((j) => j.nextAttemptAt <= now)
-      if (!job || this.waitMs(sessionId) > 0) continue
 
-      const sending = this.sender.send(sessionId, job.to, {
-        text: job.text,
-        ...(job.media ? { media: job.media } : {}),
-        ...(job.buttons?.length ? { buttons: job.buttons } : {}),
-        ...(job.footer ? { footer: job.footer } : {}),
-        ...(job.typing ? { typing: true } : {}),
-      })
-      if (!sending) continue // session not ready: wait, not an attempt
+      for (const [sessionId, list] of bySession) {
+        if (this.inFlight.has(sessionId)) continue
 
-      this.inFlight.add(sessionId)
-      this.recordSend(sessionId)
-      void sending
-        .then((result) => {
-          this.remove(job)
-          this.write('done', sessionId, job.id, {
-            id: job.id,
-            kind: job.kind,
-            messageId: result.id,
-            sentAt: Date.now(),
-          })
-          this.delete('pending', sessionId, job.id)
-          this.settle(job, { status: 'sent', messageId: result.id })
-        })
-        .catch((err: unknown) => {
-          const message = err instanceof Error ? err.message : String(err)
-          job.attempts += 1
-          job.lastError = message
-          if (err instanceof PermanentSendError || job.attempts >= this.options.maxAttempts) {
-            this.remove(job)
-            this.fail(job, err instanceof PermanentSendError ? err.code : message)
-            return
+        // Expire before sending: a stale job must not use the rate budget.
+        const live: OutboxRow[] = []
+        for (const row of list) {
+          if (now - row.created_at > settings.maxAgeMs) {
+            this.fail(row, 'expired')
+          } else {
+            live.push(row)
           }
-          // 30s, 1m, 2m, 4m ... capped at 1h.
-          const backoff = Math.min(60 * 60_000, 30_000 * 2 ** (job.attempts - 1))
-          job.nextAttemptAt = Date.now() + backoff
-          this.write('pending', sessionId, job.id, job)
-        })
-        .finally(() => {
-          this.inFlight.delete(sessionId)
-          if (this.jobs.get(sessionId)?.length === 0) this.jobs.delete(sessionId)
-        })
+        }
+        if (live.length === 0) continue
+
+        const row = live.find((job) => job.next_attempt_at <= now)
+        if (!row || this.waitMs(sessionId) > 0) continue
+
+        const job = toJob(row)
+        let sending: Promise<MessageResult> | null
+        try {
+          sending = this.sender.send(sessionId, job.to, messageFromJob(job))
+        } catch (error) {
+          this.onFailure(job, error)
+          continue
+        }
+        if (!sending) continue
+
+        this.inFlight.add(sessionId)
+        this.recordSend(sessionId)
+        const task = sending
+          .then((result) => {
+            this.onSent(job, result)
+          })
+          .catch((error: unknown) => {
+            this.onFailure(job, error)
+          })
+          .finally(() => {
+            this.inFlight.delete(sessionId)
+            this.pending.delete(task)
+          })
+        this.pending.add(task)
+      }
+    } catch (error) {
+      this.log.error({ err: error }, 'outbox tick failed')
+    } finally {
+      this.ticking = false
     }
   }
 
-  private waitMs(sessionId: string): number {
+  private onSent(job: OutboxJob, result: MessageResult): void {
     const now = Date.now()
-    const gapWait = (this.nextSendAt.get(sessionId) ?? 0) - now
-    const hourAgo = now - 60 * 60_000
-    const log = (this.sendLog.get(sessionId) ?? []).filter((t) => t > hourAgo)
-    this.sendLog.set(sessionId, log)
-    const capWait = log.length >= this.options.hourlyCap ? log[0]! - hourAgo : 0
-    return Math.max(0, gapWait, capWait)
+    this.options.db
+      .prepare(
+        `UPDATE outbox_jobs
+         SET status = 'done', message_id = ?, sent_at = ?, updated_at = ?,
+             to_phone = '', text = '', media_json = NULL, buttons_json = NULL, footer = NULL
+         WHERE id = ?`,
+      )
+      .run(result.id, now, now, job.id)
+    this.settle(job, { status: 'sent', messageId: result.id })
   }
 
-  private recordSend(sessionId: string): void {
-    const now = Date.now()
-    const jitter = Math.random() * this.options.sendJitterMs
-    this.nextSendAt.set(sessionId, now + this.options.sendGapMs + jitter)
-    const log = this.sendLog.get(sessionId) ?? []
-    log.push(now)
-    this.sendLog.set(sessionId, log)
+  private onFailure(job: OutboxJob, error: unknown): void {
+    const message = error instanceof Error ? error.message : String(error)
+    const attempts = job.attempts + 1
+    const maxAttempts = this.options.settings.outbox.maxAttempts
+
+    if (error instanceof PermanentSendError || attempts >= maxAttempts) {
+      this.fail(job, error instanceof PermanentSendError ? error.code : message, attempts)
+      return
+    }
+
+    // 30s, 1m, 2m, 4m ... capped at 1h.
+    const backoff = Math.min(60 * 60_000, 30_000 * 2 ** (attempts - 1))
+    this.options.db
+      .prepare(
+        `UPDATE outbox_jobs
+         SET attempts = ?, next_attempt_at = ?, last_error = ?, updated_at = ?
+         WHERE id = ?`,
+      )
+      .run(attempts, Date.now() + backoff, message, Date.now(), job.id)
   }
 
-  private fail(job: OutboxJob, reason: string): void {
-    this.write('failed', job.sessionId, job.id, {
-      id: job.id,
-      kind: job.kind,
-      to: maskPhone(job.to),
-      attempts: job.attempts,
-      reason,
-      createdAt: job.createdAt,
-      failedAt: Date.now(),
-    })
-    this.delete('pending', job.sessionId, job.id)
-    this.log.warn(
-      { kind: job.kind, sessionId: job.sessionId, to: maskPhone(job.to), reason },
-      'dropped outbox job',
-    )
-    this.settle(job, { status: 'failed', reason })
+  private fail(row: OutboxRow | OutboxJob, reason: string, attempts?: number): void {
+    const now = Date.now()
+    const stored = isOutboxRow(row)
+    const id = row.id
+    const sessionId = stored ? row.session_id : row.sessionId
+    const kind = row.kind
+    const phone = stored ? row.to_phone : row.to
+    const jobAttempts = attempts ?? row.attempts
+
+    this.options.db
+      .prepare(
+        `UPDATE outbox_jobs
+         SET status = 'failed', to_phone = ?, text = '', media_json = NULL,
+             buttons_json = NULL, footer = NULL, fail_reason = ?, failed_at = ?,
+             attempts = ?, updated_at = ?
+         WHERE id = ?`,
+      )
+      .run(maskPhone(phone), reason, now, jobAttempts, now, id)
+
+    this.log.warn({ kind, sessionId, to: maskPhone(phone), reason }, 'dropped outbox job')
+
+    const idempotencyKey = stored ? row.idempotency_key : row.idempotencyKey
+    if (idempotencyKey) {
+      this.settle(
+        {
+          id,
+          sessionId,
+          idempotencyKey,
+          kind,
+          to: phone,
+          text: '',
+          createdAt: stored ? row.created_at : row.createdAt,
+          attempts: jobAttempts,
+          nextAttemptAt: now,
+        },
+        { status: 'failed', reason },
+      )
+    }
   }
 
   /** Tell the queuer how the job ended; the queue never waits on the answer. */
@@ -370,72 +425,67 @@ export class Outbox {
     }
   }
 
-  private remove(job: OutboxJob): void {
-    const list = this.jobs.get(job.sessionId)
-    if (!list) return
-    const index = list.indexOf(job)
-    if (index !== -1) list.splice(index, 1)
+  private waitMs(sessionId: string): number {
+    const now = Date.now()
+    const gapWait = (this.nextSendAt.get(sessionId) ?? 0) - now
+    const hourAgo = now - 60 * 60_000
+    const log = (this.sendLog.get(sessionId) ?? []).filter((time) => time > hourAgo)
+    this.sendLog.set(sessionId, log)
+    const cap = this.options.settings.outbox.hourlyCap
+    const capWait = cap <= 0 ? 60 * 60_000 : log.length >= cap ? log[0]! - hourAgo : 0
+    return Math.max(0, gapWait, capWait)
   }
 
-  private load(): void {
-    const pendingDir = path.join(this.options.dir, 'pending')
-    let loaded = 0
-    for (const sessionId of readdirSync(pendingDir)) {
-      const dir = path.join(pendingDir, sessionId)
-      const list: OutboxJob[] = []
-      for (const name of readdirSync(dir)) {
-        if (!name.endsWith('.json')) continue
-        try {
-          list.push(JSON.parse(readFileSync(path.join(dir, name), 'utf8')) as OutboxJob)
-        } catch {
-          this.log.warn({ sessionId, file: name }, 'skipping unreadable outbox job')
-        }
-      }
-      if (list.length > 0) {
-        list.sort((a, b) => a.createdAt - b.createdAt)
-        this.jobs.set(sessionId, list)
-        loaded += list.length
-      }
-    }
-    if (loaded > 0) this.log.info({ count: loaded }, 'resumed pending outbox messages')
+  private recordSend(sessionId: string): void {
+    const now = Date.now()
+    const settings = this.options.settings.outbox
+    const jitter = Math.random() * settings.sendJitterMs
+    this.nextSendAt.set(sessionId, now + settings.sendGapMs + jitter)
+    const log = this.sendLog.get(sessionId) ?? []
+    log.push(now)
+    this.sendLog.set(sessionId, log)
   }
 
   private prune(): void {
     const now = Date.now()
-    for (const [bucket, retention] of [
-      ['done', DONE_RETENTION_MS],
-      ['failed', FAILED_RETENTION_MS],
-    ] as const) {
-      const root = path.join(this.options.dir, bucket)
-      if (!existsSync(root)) continue
-      for (const sessionId of readdirSync(root)) {
-        const dir = path.join(root, sessionId)
-        for (const name of readdirSync(dir)) {
-          const file = path.join(dir, name)
-          try {
-            if (now - statSync(file).mtimeMs > retention) rmSync(file, { force: true })
-          } catch {
-            // Raced with another prune/rename.
-          }
-        }
-      }
-    }
+    this.options.db
+      .prepare("DELETE FROM outbox_jobs WHERE status = 'done' AND sent_at < ?")
+      .run(now - DONE_RETENTION_MS)
+    this.options.db
+      .prepare("DELETE FROM outbox_jobs WHERE status = 'failed' AND failed_at < ?")
+      .run(now - FAILED_RETENTION_MS)
   }
+}
 
-  private file(bucket: Bucket, sessionId: string, id: string): string {
-    return path.join(this.options.dir, bucket, sessionId, `${id}.json`)
+function isOutboxRow(row: OutboxRow | OutboxJob): row is OutboxRow {
+  return 'session_id' in row
+}
+
+function toJob(row: OutboxRow): OutboxJob {
+  return {
+    id: row.id,
+    sessionId: row.session_id,
+    ...(row.idempotency_key ? { idempotencyKey: row.idempotency_key } : {}),
+    kind: row.kind,
+    to: row.to_phone,
+    text: row.text,
+    ...(row.media_json ? { media: JSON.parse(row.media_json) as OutboxMedia } : {}),
+    ...(row.buttons_json ? { buttons: JSON.parse(row.buttons_json) as OutboxButton[] } : {}),
+    ...(row.footer ? { footer: row.footer } : {}),
+    ...(row.typing ? { typing: true } : {}),
+    createdAt: row.created_at,
+    attempts: row.attempts,
+    nextAttemptAt: row.next_attempt_at,
+    ...(row.last_error ? { lastError: row.last_error } : {}),
   }
+}
 
-  /** Write-then-rename so a crash mid-write never leaves a torn job file. */
-  private write(bucket: Bucket, sessionId: string, id: string, data: unknown): void {
-    const target = this.file(bucket, sessionId, id)
-    mkdirSync(path.dirname(target), { recursive: true })
-    const tmp = `${target}.tmp`
-    writeFileSync(tmp, JSON.stringify(data))
-    renameSync(tmp, target)
-  }
-
-  private delete(bucket: Bucket, sessionId: string, id: string): void {
-    rmSync(this.file(bucket, sessionId, id), { force: true })
+function messageFromJob(job: OutboxJob): OutboxMessage {
+  return {
+    text: job.text,
+    ...(job.media ? { media: job.media } : {}),
+    ...(job.buttons?.length ? { buttons: job.buttons } : {}),
+    ...(job.footer ? { footer: job.footer } : {}),
+    ...(job.typing ? { typing: true } : {}),
   }
 }

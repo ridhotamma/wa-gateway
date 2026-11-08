@@ -1,21 +1,24 @@
 # wa-gateway
 
 A standalone WhatsApp gateway: durable notifications, QR pairing, inbound
-forwarding, and a small REST API in front of [Baileys](https://github.com/WhiskeySockets/Baileys).
+forwarding, a small REST API, and a Polaris-style admin console.
 
-Extracted from the Pesanle monorepo and refactored to run on **Node.js +
-[Hono](https://hono.dev/)**. It no longer depends on the monorepo's workspace
-packages, Bun runtime, env loader or observability stack.
+Built on **Node.js + [Hono](https://hono.dev/)**, with **SQLite** as the single
+store for configuration, API keys, console accounts, the outbox, credentials
+and audit history. All structured data lives in one database file; only
+attachment bytes stay on disk.
 
 > Name alternatives considered: `wa-bridge`, `sambung`, `pesanle-wa`,
 > `kabel-wa`. `wa-gateway` says what it is: a transport gateway, not a chatbot.
 
 ## What it does
 
-- **Pairing** — one Baileys session per tenant slug, QR shown over the API.
+- **Pairing** — one Baileys session per tenant slug, QR shown in the console or
+  over the API.
 - **Durable outbox** — callers enqueue a message and return immediately; the
   gateway sends it when the session is ready, retries transient failures,
-  deduplicates by idempotency key, and paces sends per session.
+  deduplicates by idempotency key, and paces sends per session. Jobs are rows
+  in SQLite.
 - **Inbound forwarding** — customer messages and attachments are forwarded to
   a webhook (the chatbot lives there, not here).
 - **Send receipts** — the final `sent` / `failed` outcome is posted back to the
@@ -23,113 +26,80 @@ packages, Bun runtime, env loader or observability stack.
 - **Direct sends** — admin test messages and seller attachments, sharing the
   same hourly send budget as the queue.
 - **Media spool** — inbound attachments are written to a short-lived,
-  owner-only spool and fetched by the webhook over the authenticated API.
+  owner-only spool; metadata is in SQLite and the webhook fetches bytes over
+  the authenticated API.
+- **Admin console** — dashboard, session/QR management, message tester, API key
+  creation/revocation, runtime configuration, audit log, password and console
+  session management.
 
 ## Requirements
 
-- Node.js **20.19+** (the production image uses Node 22)
-- A persistent volume for credentials, one for the outbox and one for media
+- Node.js **22+** (the production image uses Node 22; `better-sqlite3` is a
+  native module)
+- A persistent volume for the SQLite database and media directory
 - One replica only: sessions are in-process sockets
 
 ## Quick start
 
 ```sh
 cp .env.example .env
-# set WHATSAPP_API_KEY for anything beyond local development
+# set WHATSAPP_API_KEY
 npm install
 npm run dev
 ```
 
-The gateway starts on `http://localhost:3005`.
+The gateway starts on `http://localhost:3005`; the console is at
+`http://localhost:3005/console`.
 
-```sh
-curl http://localhost:3005/health
+On first run with no admin account, the console shows `/console/setup`.
+Alternatively, seed the first admin from `.env`:
+
+```env
+WHATSAPP_CONSOLE_EMAIL="admin@example.com"
+WHATSAPP_CONSOLE_PASSWORD="a-long-password"
 ```
 
-Pair a tenant (`shop` is the session id):
+The env values are used only when the database has no admins. After that,
+manage the account inside the console.
+
+Pair a tenant from the console, or with the API:
 
 ```sh
 curl -X POST http://localhost:3005/sessions/shop/start \
   -H "x-api-key: $WHATSAPP_API_KEY"
-# -> { "ok": true, "session": { "status": "qr_ready", "qrDataUrl": "data:image/png;base64,…" } }
-
-curl http://localhost:3005/sessions/shop/status \
-  -H "x-api-key: $WHATSAPP_API_KEY"
 ```
 
-Queue a notification:
+## Console
 
-```sh
-curl -X POST http://localhost:3005/notify/text \
-  -H "x-api-key: $WHATSAPP_API_KEY" \
-  -H "content-type: application/json" \
-  -d '{
-    "sessionId": "shop",
-    "phone": "6281234567890",
-    "kind": "order.paid",
-    "idempotencyKey": "order:123:paid",
-    "text": "Pesanan #123 sudah dibayar."
-  }'
-```
+The console is server-rendered with the same Polaris-inspired styling as the
+Bunwrite console: light canvas, one sidebar, white cards, tone badges and a
+single primary action per page. It has no frontend build step.
 
-## Architecture
+| Page          | What it does                                                        |
+| ------------- | ------------------------------------------------------------------- |
+| Overview      | Sessions, queue depth, failures, active keys, media spool, activity |
+| Sessions      | Pair, inspect QR/status, rename, log out                            |
+| Notifications | Send text, text + buttons, or media; direct or queued               |
+| API keys      | Create named keys (shown once), revoke them                         |
+| Settings      | Outbox pacing, typing, webhooks, media and session lifecycle        |
+| Activity      | Audit history of console and message actions                        |
+| Security      | Change password, list/revoke console sessions                       |
 
-```
-src/
-  index.ts                     bootstrap: env → services → HTTP → restore → shutdown
-  config.ts                    typed, validated environment (fail fast)
-  server.ts                    Node HTTP server + graceful stop
-  http/
-    app.ts                     Hono app, middleware, error mapping
-    schemas.ts                 Zod request schemas
-    routes/health.ts           public liveness + authenticated inventory
-    routes/sessions.ts         pair, status, logout, rename, media download
-    routes/notify.ts           queued text / media / buttons
-    routes/messages.ts         direct text / media / buttons
-    middleware/                auth, request id + structured logging
-  services/
-    session-manager.ts         lifecycle, restore, typing, session registry
-    outbox.ts                  durable queue, pacing, retries, idempotency
-    media-store.ts             inbound attachment spool
-    inbound-forwarder.ts       customer message → webhook
-    status-reporter.ts         sent / failed → webhook
-    direct-send.ts             non-queued sends
-    typing.ts                  human-looking "typing…"
-  engine/
-    types.ts                   engine contracts
-    errors.ts                  PermanentSendError, UnsafeMediaUrlError
-    identity/wa-id.ts          phone / JID normalization
-    baileys/                   socket adapter, reconnection, media, buttons
-  lib/
-    callbacks.ts               webhook URL templates
-    logger.ts                  pino
-    phone.ts                   log masking
-```
+Console authentication is email + password. Admins and sessions are rows in
+SQLite; session cookies contain a random bearer token and the database stores
+only its SHA-256 hash. Cookies are `HttpOnly`, `SameSite=Lax`, scoped to
+`/console`, and `Secure` in production. Cross-site form posts are refused.
 
-### Outbound flow
-
-1. A caller posts to `/notify/*`.
-2. The job is written atomically to `pending/<session>/<hash>.json` and the
-   API answers `202` with `{ jobId, duplicate }`.
-3. The outbox worker sends when the session is `ready`, respecting the
-   per-session gap, jitter and hourly cap.
-4. Success leaves a PII-free marker in `done/`; permanent failure leaves a
-   masked record in `failed/`.
-5. `onSettled` posts the outcome to `WHATSAPP_STATUS_URL`.
-
-### Inbound flow
-
-1. Baileys receives a direct customer message.
-2. Media bytes are downloaded (up to `WHATSAPP_INBOUND_MEDIA_MAX_BYTES`) and
-   written to the media spool.
-3. The forwarder posts `{ sessionId, messageId, from, body, timestamp,
-hasMedia, media? }` to `WHATSAPP_INBOUND_URL`; the webhook fetches bytes
-   from `/sessions/:sessionId/media/:mediaId`.
+Until the first admin exists, `/console/setup` is claimable by whoever reaches
+it first. On production, seed the admin from `WHATSAPP_CONSOLE_EMAIL` and
+`WHATSAPP_CONSOLE_PASSWORD`, or finish setup immediately after deployment. The
+`console:admin` CLI can reset a password if the account is locked out.
 
 ## API
 
-All routes except public liveness require the shared secret, as
-`x-api-key: <key>` or `Authorization: Bearer <key>`.
+All routes except public liveness require an API key, as
+`x-api-key: <key>` or `Authorization: Bearer <key>`. The environment key
+(`WHATSAPP_API_KEY`) is permanent; keys created in the console can be revoked.
 
 | Method | Path                           | Purpose                                     |
 | ------ | ------------------------------ | ------------------------------------------- |
@@ -148,38 +118,114 @@ All routes except public liveness require the shared secret, as
 
 Status codes worth handling:
 
-- `202` — queued on disk
+- `202` — queued in SQLite
 - `409 not_connected` — tenant has not linked WhatsApp
 - `413` — queued media over 1.5 MB must be a URL
 - `422` — permanent send failure (`not_on_whatsapp`, `invalid_recipient`,
   `unsafe_media`)
 - `429` — the session's send budget is exhausted; retry later
 
-The request and response shapes are unchanged from the original Pesanle
-daemon, so existing clients only need `WHATSAPP_SERVICE_URL` and
-`WHATSAPP_API_KEY`.
+## Architecture
+
+```
+src/
+  index.ts                     bootstrap: env → SQLite → services → HTTP
+  config.ts                    typed environment (deployment-level)
+  server.ts                    Node HTTP server + graceful stop
+  db/
+    schema.ts                  SQLite schema (versioned migrations)
+    database.ts                open, WAL, foreign keys, transaction helper
+    whatsapp-auth-store.ts     Baileys credentials + signal keys in SQLite
+  http/
+    app.ts                     Hono app, middleware, error mapping
+    routes/                    health, sessions, notify, messages
+    middleware/                API-key auth, request id + structured logging
+  console/
+    router.ts                  server-rendered pages and form handlers
+    auth.ts                    cookie sessions, CSRF, login rate limit
+    layout.ts, styles.ts, ui.ts  Polaris-style chrome and components
+    pages/                     overview, sessions, notifications, keys, settings…
+  services/
+    settings-store.ts          one runtime settings row in SQLite, live updates
+    api-key-store.ts           named hashed keys + last-used tracking
+    console-auth.ts            admins, scrypt hashes, console sessions
+    audit-log.ts               console and message audit trail
+    session-manager.ts         lifecycle, restore, typing, session registry
+    outbox.ts                  SQLite queue, pacing, retries, idempotency
+    media-store.ts             attachment files + SQLite metadata
+    inbound-forwarder.ts       customer message → webhook
+    status-reporter.ts         sent / failed → webhook
+    direct-send.ts             non-queued sends
+    typing.ts                  human-looking "typing…"
+  engine/
+    types.ts, errors.ts        engine contracts
+    identity/wa-id.ts          phone / JID normalization
+    baileys/                   socket adapter, auth state, media, buttons
+  lib/
+    callbacks.ts, logger.ts, phone.ts
+```
+
+### SQLite tables
+
+| Table                | Contains                                                    |
+| -------------------- | ----------------------------------------------------------- |
+| `settings`           | Runtime configuration (one validated JSON row)              |
+| `api_keys`           | Named key hashes, prefix, last used, revoked time           |
+| `console_admins`     | Email and scrypt password hash                              |
+| `console_sessions`   | Hashed console session tokens and expiry                    |
+| `outbox_jobs`        | Pending/done/failed messages, retry state, idempotency keys |
+| `whatsapp_sessions`  | Credentials JSON plus last status per tenant                |
+| `whatsapp_auth_keys` | Baileys signal keys per session                             |
+| `media_spool`        | Attachment metadata and relative file paths                 |
+| `audit_log`          | Console actions and message tests                           |
+
+Database defaults to `./.whatsapp-data/gateway.db`. Attachment bytes default
+to `./.whatsapp-data/media`.
+
+### Outbound flow
+
+1. A caller posts to `/notify/*` (or uses the console tester).
+2. The job is inserted into `outbox_jobs` and the API answers `202` with
+   `{ jobId, duplicate }`.
+3. The outbox worker sends when the session is `ready`, respecting the
+   per-session gap, jitter and hourly cap.
+4. Success scrubs the row's recipient and body but keeps an idempotency marker;
+   permanent failure keeps only a masked recipient and reason.
+5. `onSettled` posts the outcome to the status callback.
+
+### Inbound flow
+
+1. Baileys receives a direct customer message.
+2. Media bytes are downloaded (up to the configured limit), written to the
+   media directory, and described in `media_spool`.
+3. The forwarder posts `{ sessionId, messageId, from, body, timestamp,
+hasMedia, media? }` to the inbound webhook; the webhook fetches bytes from
+   `/sessions/:sessionId/media/:mediaId`.
 
 ## Configuration
 
-Every variable is optional unless noted. See [`.env.example`](./.env.example)
-for defaults and comments.
+Deployment values live in the environment; operator-tunable settings are in
+SQLite and editable from the console. The outbox/typing/webhook/media/session
+variables in `.env` seed SQLite on first boot only; after that, the console is
+the source of truth. See [`.env.example`](./.env.example).
 
-| Variable                       | Default                | Notes                                        |
-| ------------------------------ | ---------------------- | -------------------------------------------- |
-| `NODE_ENV`                     | `development`          | `production` requires `WHATSAPP_API_KEY`     |
-| `HOST` / `PORT`                | `0.0.0.0` / `3005`     |                                              |
-| `WHATSAPP_LOG_LEVEL`           | `info`                 | pino level                                   |
-| `WHATSAPP_API_KEY`             | empty                  | **Required in production**                   |
-| `WHATSAPP_AUTH_DIR`            | `./.whatsapp-sessions` | Paired credentials — back up                 |
-| `WHATSAPP_OUTBOX_DIR`          | `./.whatsapp-outbox`   | Queued jobs                                  |
-| `WHATSAPP_MEDIA_DIR`           | `./.whatsapp-media`    | Inbound attachment spool                     |
-| `WHATSAPP_RESTORE`             | `true`                 | Reconnect paired sessions on boot            |
-| `WHATSAPP_INBOUND_URL`         | empty                  | Full template or base origin; empty disables |
-| `WHATSAPP_STATUS_URL`          | sibling of inbound     | Send outcome callback                        |
-| `WHATSAPP_SEND_GAP_MS`         | `3000`                 | Per-session gap between sends                |
-| `WHATSAPP_HOURLY_CAP`          | `120`                  | Queue + direct sends per rolling hour        |
-| `WHATSAPP_OUTBOX_MAX_ATTEMPTS` | `8`                    | Transient retries before permanent failure   |
-| `WHATSAPP_TYPING`              | `true`                 | Human-looking pause for chatbot replies      |
+| Variable                         | Default                       | Notes                                     |
+| -------------------------------- | ----------------------------- | ----------------------------------------- |
+| `NODE_ENV`                       | `development`                 | `production` requires `WHATSAPP_API_KEY`  |
+| `HOST` / `PORT`                  | `0.0.0.0` / `3005`            |                                           |
+| `WHATSAPP_LOG_LEVEL`             | `info`                        | pino level                                |
+| `WHATSAPP_API_KEY`               | empty                         | **Required in production**; permanent key |
+| `WHATSAPP_DATABASE_PATH`         | `./.whatsapp-data/gateway.db` | SQLite file                               |
+| `WHATSAPP_MEDIA_DIR`             | `./.whatsapp-data/media`      | Attachment bytes                          |
+| `WHATSAPP_CONSOLE_ENABLED`       | `true`                        | Set `false` to hide `/console`            |
+| `WHATSAPP_CONSOLE_EMAIL`         | empty                         | Bootstrap admin only                      |
+| `WHATSAPP_CONSOLE_PASSWORD`      | empty                         | Bootstrap admin only (min 10 characters)  |
+| `WHATSAPP_CONSOLE_SESSION_HOURS` | `168`                         | Console session lifetime                  |
+
+The Settings page controls outbox gap/jitter/cap/retries, typing simulation,
+inbound/status webhook URLs and timeouts, media limits and retention, pairing
+timeout and boot restore. Changes apply immediately; boot-restore values take
+effect on the next start.
 
 Env loading order: real environment → `.env.local` → `.env`. Real variables
 always win; `.env.local` wins over `.env`.
@@ -190,7 +236,7 @@ always win; `.env.local` wins over `.env`.
 
 ```sh
 cp .env.example .env
-# fill WHATSAPP_API_KEY and WHATSAPP_DOMAIN
+# fill WHATSAPP_API_KEY, WHATSAPP_CONSOLE_EMAIL/PASSWORD, WHATSAPP_DOMAIN
 docker compose up -d --build
 docker compose logs -f gateway
 ```
@@ -200,23 +246,28 @@ port is bound to localhost only.
 
 ### Backups
 
-`scripts/backup-volumes.sh` snapshots the sessions, outbox and Caddy volumes
-and supports off-host upload plus a heartbeat. Losing the sessions volume means
-every seller has to scan a new QR code. Run it from cron, e.g. every 6 hours:
+`scripts/backup-volumes.sh` makes a WAL-safe copy of SQLite with
+better-sqlite3's online backup API, plus the media spool and Caddy data, then
+supports off-host upload and a heartbeat. Losing the database means every
+seller must scan a new QR code and every integration needs a new API key. Run
+it from cron, e.g. every 6 hours:
 
 ```cron
 0 */6 * * * /opt/wa-gateway/scripts/backup-volumes.sh >> /var/log/wa-gateway-backup.log 2>&1
 ```
 
+The archive contains live credentials and customer phone numbers; store it
+like a password file.
+
 ### Data residency
 
 The host stores live WhatsApp credentials and queued customer phone numbers
 and order details. Keep it in the region your privacy policy commits to
-(ap-southeast-1 for Pesanle), and treat backups like password files.
+(ap-southeast-1 for Pesanle).
 
 ### Health
 
-`GET /health` is public and returns only `{ status, uptime }`. Send the API key
+`GET /health` is public and returns only `{ status, uptime }`. Send an API key
 to get the instance id, session counts and outbox totals.
 
 ## Development
@@ -227,17 +278,24 @@ npm run typecheck
 npm test            # vitest
 npm run build       # tsc -> dist/
 npm start           # node dist/index.js
+npm run backup -- /tmp/gateway-backup.db
+npm run console:admin -- admin@example.com new-long-password
 npm run format
 ```
 
-Tests cover the outbox timing/idempotency, media spool, callback URLs, typing,
-Baileys protocol helpers, engine close policy, and the HTTP routes.
+Tests cover the outbox timing/idempotency, SQLite stores, media spool, callback
+URLs, typing, Baileys protocol helpers, console auth/CSRF, API auth and all
+HTTP routes.
 
-## Migrating from the monorepo
+## Migrating from the original monorepo daemon
 
 - The app moved out of `apps/whatsapp`; the engine moved out of
   `packages/whatsapp`.
+- Sessions, the outbox and settings are now in **SQLite**, not JSON files and
+  credential directories. Existing file-based data is not imported; re-pair
+  sessions once and create API keys in the console.
 - `@repo/env` was replaced by Node's `process.loadEnvFile`.
 - `@repo/observability` was replaced by structured pino logs on stdout.
   Collect them with your container log pipeline.
-- Runtime directories and all `WHATSAPP_*` variable names are unchanged.
+- API route shapes and status codes are unchanged. Clients still need only
+  `WHATSAPP_SERVICE_URL` and `WHATSAPP_API_KEY`.

@@ -33,6 +33,14 @@ export interface OutboxConfig {
   maxAttempts: number
 }
 
+export interface ConsoleConfig {
+  enabled: boolean
+  /** Bootstrap admin, created only when the database has no admins yet. */
+  email: string | null
+  password: string | null
+  sessionTtlMs: number
+}
+
 export interface Config {
   nodeEnv: 'development' | 'test' | 'production'
   isProduction: boolean
@@ -41,9 +49,11 @@ export interface Config {
   logLevel: LogLevel
   /** Shared secret. Empty only in development; production refuses to start. */
   apiKey: string
-  authDir: string
-  outboxDir: string
+  /** SQLite database: settings, keys, admins, outbox, credentials, audit. */
+  databasePath: string
+  /** Attachment bytes stay on disk; their metadata is in SQLite. */
   mediaDir: string
+  console: ConsoleConfig
   restoreOnBoot: boolean
   restoreDelayMs: number
   pairingTimeoutMs: number
@@ -106,9 +116,17 @@ export function loadConfig(
     port: readNumber(env, 'PORT', 3005, { min: 0, max: 65_535 }),
     logLevel: readLogLevel(env, 'WHATSAPP_LOG_LEVEL', value(env.LOG_LEVEL), 'info'),
     apiKey,
-    authDir: resolvePath(cwd, value(env.WHATSAPP_AUTH_DIR), '.whatsapp-sessions'),
-    outboxDir: resolvePath(cwd, value(env.WHATSAPP_OUTBOX_DIR), '.whatsapp-outbox'),
-    mediaDir: resolvePath(cwd, value(env.WHATSAPP_MEDIA_DIR), '.whatsapp-media'),
+    databasePath: resolvePath(cwd, value(env.WHATSAPP_DATABASE_PATH), '.whatsapp-data/gateway.db'),
+    mediaDir: resolvePath(cwd, value(env.WHATSAPP_MEDIA_DIR), '.whatsapp-data/media'),
+    console: {
+      enabled: readBoolean(env, 'WHATSAPP_CONSOLE_ENABLED', true),
+      email: value(env.WHATSAPP_CONSOLE_EMAIL)?.toLowerCase() ?? null,
+      password: value(env.WHATSAPP_CONSOLE_PASSWORD),
+      sessionTtlMs:
+        readNumber(env, 'WHATSAPP_CONSOLE_SESSION_HOURS', 24 * 7, { min: 1, max: 24 * 365 }) *
+        60 *
+        60_000,
+    },
     restoreOnBoot: readBoolean(env, 'WHATSAPP_RESTORE', true),
     restoreDelayMs: readNumber(env, 'WHATSAPP_RESTORE_DELAY_MS', 1_500),
     pairingTimeoutMs: readNumber(env, 'WHATSAPP_PAIRING_TIMEOUT_MS', 180_000),

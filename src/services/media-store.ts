@@ -3,24 +3,22 @@
  *
  * Baileys downloads customer media through the authenticated socket. The
  * webhook runs on a different host and cannot call `downloadMediaMessage`, so
- * the daemon writes the bytes here and forwards only an opaque id. The
- * webhook fetches the file over the authenticated `/sessions/:id/media/:id`
- * route, stores it in its own object storage, and the daemon prunes the spool
- * after 24 hours.
+ * the daemon writes the bytes here and forwards only an opaque id. Metadata
+ * lives in SQLite; the bytes stay on disk (a 16 MB file belongs in object
+ * storage, not in the database that is backed up every few hours).
  *
- * The directory is a volume in production. Files are owner-only (0600), the
- * keys are hashes rather than message ids, and no phone number is written to
- * the metadata — a stale spool is still customer data, so keep the retention
- * short. A total-byte cap trims the oldest files first.
- *
- * Every operation is async: a 16 MB document must not block the socket loop.
+ * Files are owner-only (0600), keys are hashes rather than message ids, and no
+ * phone number is written to the metadata. A total-byte cap trims the oldest
+ * files first.
  */
 
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 
+import type { SqliteDatabase } from '../db/database.js'
 import type { IncomingMediaKind } from '../engine/index.js'
+import type { RuntimeSettings } from './settings-store.js'
 
 export interface InboundMediaMeta {
   kind: IncomingMediaKind
@@ -36,28 +34,30 @@ export interface StoredInboundMedia extends InboundMediaMeta {
   savedAt: number
 }
 
-interface StoredMeta extends StoredInboundMedia {
-  messageId: string
+export interface MediaStoreStats {
+  files: number
+  bytes: number
+}
+
+interface MediaRow {
+  id: string
+  session_id: string
+  kind: IncomingMediaKind
+  mimetype: string
+  filename: string | null
+  size_bytes: number
+  relative_path: string
+  created_at: number
 }
 
 const SESSION_ID = /^[a-zA-Z0-9_-]{1,64}$/
 const MEDIA_ID = /^[a-f0-9]{32}$/
-const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000
-const DEFAULT_MAX_BYTES = 512 * 1024 * 1024
-
-function metaFileName(id: string): string {
-  return `${id}.json`
-}
-
-function bytesFileName(id: string): string {
-  return `${id}.bin`
-}
 
 export class MediaStore {
   constructor(
     private readonly dir: string,
-    private readonly ttlMs = DEFAULT_TTL_MS,
-    private readonly maxBytes = DEFAULT_MAX_BYTES,
+    private readonly db: SqliteDatabase,
+    private readonly settings: RuntimeSettings,
   ) {}
 
   async save(
@@ -67,34 +67,50 @@ export class MediaStore {
     data: Buffer,
   ): Promise<StoredInboundMedia> {
     if (!SESSION_ID.test(sessionId)) throw new Error('Invalid session id for media spool.')
-    const id = createHash('sha256').update(`${sessionId}\0${messageId}`).digest('hex').slice(0, 32)
-    const sessionDir = path.join(this.dir, sessionId)
-    await mkdir(sessionDir, { recursive: true, mode: 0o700 })
 
-    const stored: StoredMeta = {
-      id,
-      sessionId,
-      messageId,
-      kind: meta.kind,
-      mimetype: meta.mimetype,
-      ...(meta.filename ? { filename: meta.filename } : {}),
-      sizeBytes: data.byteLength,
-      savedAt: Date.now(),
-    }
-    await writeAtomic(path.join(sessionDir, bytesFileName(id)), data)
-    await writeAtomic(
-      path.join(sessionDir, metaFileName(id)),
-      Buffer.from(JSON.stringify(stored), 'utf8'),
-    )
+    const id = createHash('sha256').update(`${sessionId}\0${messageId}`).digest('hex').slice(0, 32)
+    const relativePath = path.join(sessionId, `${id}.bin`)
+    const fullPath = path.join(this.dir, relativePath)
+    await mkdir(path.dirname(fullPath), { recursive: true, mode: 0o700 })
+    await writeAtomic(fullPath, data)
+
+    const savedAt = Date.now()
+    const expiresAt = savedAt + this.settings.inbound.mediaTtlMs
+    this.db
+      .prepare(
+        `INSERT INTO media_spool
+          (id, session_id, message_id, kind, mimetype, filename, size_bytes,
+           relative_path, created_at, expires_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           mimetype = excluded.mimetype,
+           filename = excluded.filename,
+           size_bytes = excluded.size_bytes,
+           relative_path = excluded.relative_path,
+           created_at = excluded.created_at,
+           expires_at = excluded.expires_at`,
+      )
+      .run(
+        id,
+        sessionId,
+        messageId,
+        meta.kind,
+        meta.mimetype,
+        meta.filename ?? null,
+        data.byteLength,
+        relativePath,
+        savedAt,
+        expiresAt,
+      )
 
     return {
       id,
       sessionId,
-      kind: stored.kind,
-      mimetype: stored.mimetype,
-      ...(stored.filename ? { filename: stored.filename } : {}),
-      sizeBytes: stored.sizeBytes,
-      savedAt: stored.savedAt,
+      kind: meta.kind,
+      mimetype: meta.mimetype,
+      ...(meta.filename ? { filename: meta.filename } : {}),
+      sizeBytes: data.byteLength,
+      savedAt,
     }
   }
 
@@ -103,23 +119,23 @@ export class MediaStore {
     id: string,
   ): Promise<{ media: StoredInboundMedia; data: Buffer } | null> {
     if (!SESSION_ID.test(sessionId) || !MEDIA_ID.test(id)) return null
-    const sessionDir = path.join(this.dir, sessionId)
+
+    const row = this.db
+      .prepare('SELECT * FROM media_spool WHERE id = ? AND session_id = ?')
+      .get(id, sessionId) as MediaRow | undefined
+    if (!row) return null
 
     try {
-      const stored = JSON.parse(
-        await readFile(path.join(sessionDir, metaFileName(id)), 'utf8'),
-      ) as StoredMeta
-      if (stored.id !== id || stored.sessionId !== sessionId) return null
-      const data = await readFile(path.join(sessionDir, bytesFileName(id)))
+      const data = await readFile(path.join(this.dir, row.relative_path))
       return {
         media: {
-          id: stored.id,
-          sessionId: stored.sessionId,
-          kind: stored.kind,
-          mimetype: stored.mimetype,
-          ...(stored.filename ? { filename: stored.filename } : {}),
-          sizeBytes: stored.sizeBytes || data.byteLength,
-          savedAt: stored.savedAt,
+          id: row.id,
+          sessionId: row.session_id,
+          kind: row.kind,
+          mimetype: row.mimetype,
+          ...(row.filename ? { filename: row.filename } : {}),
+          sizeBytes: row.size_bytes || data.byteLength,
+          savedAt: row.created_at,
         },
         data,
       }
@@ -129,57 +145,47 @@ export class MediaStore {
   }
 
   /**
-   * Remove expired files, then trim the oldest remaining files until the
-   * spool is under its byte cap. The cap is the backstop against a customer
-   * filling the host's disk with attachments inside one retention window.
+   * Remove expired rows/files, then trim the oldest remaining files until the
+   * spool is under its byte cap.
    */
   async prune(now = Date.now()): Promise<number> {
-    let sessions
-    try {
-      sessions = await readdir(this.dir, { withFileTypes: true })
-    } catch {
-      return 0
-    }
-
     let removed = 0
-    const remaining: Array<{ full: string; sizeBytes: number; mtimeMs: number }> = []
-    for (const session of sessions) {
-      if (!session.isDirectory() || !SESSION_ID.test(session.name)) continue
-      const sessionDir = path.join(this.dir, session.name)
-      let files: string[]
-      try {
-        files = await readdir(sessionDir)
-      } catch {
-        continue
-      }
-      for (const file of files) {
-        const full = path.join(sessionDir, file)
-        try {
-          const info = await stat(full)
-          if (now - info.mtimeMs > this.ttlMs) {
-            await rm(full, { force: true })
-            removed += 1
-          } else if (file.endsWith('.bin')) {
-            remaining.push({ full, sizeBytes: info.size, mtimeMs: info.mtimeMs })
-          }
-        } catch {
-          // Pruned or replaced meanwhile.
-        }
-      }
+    const ttl = this.settings.inbound.mediaTtlMs
+    const expired = this.db
+      .prepare('SELECT * FROM media_spool WHERE created_at + ? <= ?')
+      .all(ttl, now) as MediaRow[]
+    for (const row of expired) {
+      await rm(path.join(this.dir, row.relative_path), { force: true }).catch(() => {})
+      this.db.prepare('DELETE FROM media_spool WHERE id = ?').run(row.id)
+      removed += 1
     }
 
-    let totalBytes = remaining.reduce((sum, file) => sum + file.sizeBytes, 0)
-    if (totalBytes > this.maxBytes) {
-      remaining.sort((a, b) => a.mtimeMs - b.mtimeMs)
-      for (const file of remaining) {
-        if (totalBytes <= this.maxBytes) break
-        await rm(file.full, { force: true }).catch(() => {})
-        await rm(file.full.replace(/\.bin$/, '.json'), { force: true }).catch(() => {})
-        totalBytes -= file.sizeBytes
+    const total = this.db
+      .prepare('SELECT coalesce(sum(size_bytes), 0) AS bytes FROM media_spool')
+      .get() as { bytes: number }
+    let bytes = total.bytes
+    const maxBytes = this.settings.inbound.mediaSpoolMaxBytes
+    if (bytes > maxBytes) {
+      const oldest = this.db
+        .prepare('SELECT * FROM media_spool ORDER BY created_at ASC')
+        .all() as MediaRow[]
+      for (const row of oldest) {
+        if (bytes <= maxBytes) break
+        await rm(path.join(this.dir, row.relative_path), { force: true }).catch(() => {})
+        this.db.prepare('DELETE FROM media_spool WHERE id = ?').run(row.id)
+        bytes -= row.size_bytes
         removed += 1
       }
     }
+
     return removed
+  }
+
+  stats(): MediaStoreStats {
+    const row = this.db
+      .prepare('SELECT count(*) AS files, coalesce(sum(size_bytes), 0) AS bytes FROM media_spool')
+      .get() as { files: number; bytes: number }
+    return { files: row.files, bytes: row.bytes }
   }
 }
 
