@@ -1,0 +1,81 @@
+# Production stack for the WhatsApp gateway + Caddy (automatic TLS).
+#
+# This service is deployed on its own: it is not a website, it keeps
+# per-seller socket state, and the host stores every paired seller's WhatsApp
+# credentials.
+#
+# DATA RESIDENCY: the host stores WhatsApp credentials and queues customer
+# phone numbers and order details. Run it in the region your privacy policy
+# commits to (ap-southeast-1 for Pesanle). Do not move it casually.
+#
+# One-time setup on the host (repo already cloned, DNS A record pointing here):
+#   1. Create .env (gitignored) with WHATSAPP_API_KEY
+#      (openssl rand -hex 32), WHATSAPP_DOMAIN and the other variables
+#      listed in .env.example.
+#   2. From the repo root: docker compose up -d --build
+#   3. Schedule scripts/backup-volumes.sh (see its header).
+#
+# Sessions survive restarts via the whatsapp-sessions volume + boot restore;
+# queued notifications survive via the whatsapp-outbox volume.
+# SINGLE REPLICA ONLY — sessions are in-process sockets, and two daemons on
+# one set of credentials kick each other off (close code 440).
+name: wa-gateway
+
+services:
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: wa-gateway:latest
+    restart: unless-stopped
+    mem_limit: 2g # Baileys is ~15-40MB per session; raise with seller count
+    stop_grace_period: 20s # time to close sockets cleanly on deploy
+    ports:
+      # Localhost only — public traffic enters via Caddy with TLS.
+      # Handy for host-level debugging: curl http://127.0.0.1:3005/health
+      - '127.0.0.1:3005:3005'
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      WHATSAPP_AUTH_DIR: /data/sessions
+      WHATSAPP_OUTBOX_DIR: /data/outbox
+      WHATSAPP_MEDIA_DIR: /data/media
+      WHATSAPP_RESTORE_DELAY_MS: '2000' # gentler on small boxes at boot
+    volumes:
+      - whatsapp-sessions:/data/sessions # paired-seller credentials — back up!
+      - whatsapp-outbox:/data/outbox # queued notifications
+      - whatsapp-media:/data/media # transient inbound attachments (24h)
+    networks:
+      - edge
+    logging:
+      driver: json-file
+      options:
+        max-size: '20m'
+        max-file: '3'
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - '80:80'
+      - '443:443'
+    environment:
+      # Interpolated from .env; Caddy reads it as {$WHATSAPP_DOMAIN}.
+      WHATSAPP_DOMAIN: ${WHATSAPP_DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data # ACME certs — back up alongside sessions
+      - caddy-config:/config
+    networks:
+      - edge
+
+networks:
+  edge:
+
+volumes:
+  whatsapp-sessions:
+  whatsapp-outbox:
+  whatsapp-media:
+  caddy-data:
+  caddy-config:

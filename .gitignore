@@ -1,0 +1,22 @@
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+
+# Runtime state: paired credentials, queued messages, inbound attachments.
+.whatsapp-sessions/
+.whatsapp-outbox/
+.whatsapp-media/
+.data/
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Logs and editors
+*.log
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json

@@ -1,0 +1,7 @@
+# Served by the caddy service in docker-compose.yml.
+# {$WHATSAPP_DOMAIN} is interpolated by Caddy from the container environment
+# (passed through from .env). The first request triggers automatic Let's
+# Encrypt issuance; renewals are automatic. No certbot needed.
+{$WHATSAPP_DOMAIN} {
+	reverse_proxy gateway:3005
+}

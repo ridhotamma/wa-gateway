@@ -1,0 +1,14 @@
+.git/
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+.env
+.env.*
+!.env.example
+.whatsapp-sessions/
+.whatsapp-outbox/
+.whatsapp-media/
+.data/
+*.log
+.DS_Store
