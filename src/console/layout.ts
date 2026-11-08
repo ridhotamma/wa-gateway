@@ -6,7 +6,7 @@
 import { DIALOG_SCRIPT, confirmDialog } from './dialog.js'
 import { html, raw, type Html } from './html.js'
 import { CONSOLE_CSS } from './styles.js'
-import { alert, avatar, icon, tile, type IconName } from './ui.js'
+import { alert, avatar, brandMark, icon, type IconName } from './ui.js'
 
 export interface ConsoleNav {
   section: string
@@ -79,13 +79,13 @@ export function shell(title: string, nav: ConsoleNav, body: Html, flash?: Flash)
         <label for="nav-toggle" class="scrim" aria-hidden="true"></label>
         <div class="topbar">
           <label for="nav-toggle" aria-label="Menu">${icon('list', 20)}</label>
-          <div class="brand">${tile('W', 'wa-gateway', 'sm')}<span>wa-gateway</span></div>
+          <div class="brand">${brandMark('sm')}<span>wa-gateway</span></div>
         </div>
         <div class="frame">
           <nav class="nav">
             <div class="nav-head">
               <a class="switcher-btn" href="/console" style="text-decoration:none">
-                ${tile('W', 'wa-gateway')}
+                ${brandMark()}
                 <span class="switcher-text"
                   ><span class="switcher-org">WhatsApp gateway</span><b>wa-gateway</b></span
                 >
@@ -147,7 +147,7 @@ export function bare(title: string, body: Html): Html {
       <body>
         <main class="select-main">
           <div class="auth">
-            <div class="brand">${tile('W', 'wa-gateway')}<span>wa-gateway</span></div>
+            <div class="brand">${brandMark()}<span>wa-gateway</span></div>
             ${body}
           </div>
         </main>

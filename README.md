@@ -299,3 +299,10 @@ HTTP routes.
   Collect them with your container log pipeline.
 - API route shapes and status codes are unchanged. Clients still need only
   `WHATSAPP_SERVICE_URL` and `WHATSAPP_API_KEY`.
+
+## Credits
+
+The console follows Shopify Polaris conventions, adapted from the Bunwrite
+console. Its icons are [Phosphor](https://phosphoricons.com) regular
+(outlined) paths, inlined under the MIT license; the WhatsApp mark lives in
+`src/console/ui.ts` as `whatsapp-logo`.
