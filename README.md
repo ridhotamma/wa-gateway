@@ -74,11 +74,11 @@ Compose stack below with TLS (Caddy), or an SSH tunnel such as
 `ssh -L 3005:127.0.0.1:3005 user@host`, rather than exposing plain HTTP.
 
 Images are built for `linux/amd64` and `linux/arm64`. `latest` tracks `main`;
-releases also publish `1`, `1.0` and `1.0.0` tags, plus `sha-<commit>`. Pin a
+releases also publish `1`, `1.1` and `1.1.0` tags, plus `sha-<commit>`. Pin a
 release tag in production:
 
 ```sh
-docker pull ghcr.io/ridhotamma/wa-gateway:1.0.0
+docker pull ghcr.io/ridhotamma/wa-gateway:1.1.0
 ```
 
 If the pull is denied, the GHCR package is still private: set its visibility to
