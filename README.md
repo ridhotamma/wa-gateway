@@ -1,5 +1,8 @@
 # wa-gateway
 
+[![CI](https://github.com/ridhotamma/wa-gateway/actions/workflows/ci.yml/badge.svg)](https://github.com/ridhotamma/wa-gateway/actions/workflows/ci.yml)
+[![Docker](https://github.com/ridhotamma/wa-gateway/actions/workflows/docker.yml/badge.svg)](https://github.com/ridhotamma/wa-gateway/actions/workflows/docker.yml)
+
 A standalone WhatsApp gateway: durable notifications, QR pairing, inbound
 forwarding, a small REST API, and a Polaris-style admin console.
 
@@ -34,12 +37,53 @@ attachment bytes stay on disk.
 
 ## Requirements
 
-- Node.js **22+** (the production image uses Node 22; `better-sqlite3` is a
-  native module)
+- Node.js **22+** for source installs (the production image uses Node 22;
+  `better-sqlite3` is a native module)
+- Docker **24+** for the prebuilt image (no Node.js or build tools needed)
 - A persistent volume for the SQLite database and media directory
 - One replica only: sessions are in-process sockets
 
 ## Quick start
+
+### Docker (prebuilt image)
+
+The image is published to GitHub Container Registry and runs as the non-root
+`node` user. All durable state lives in `/data`; mount a named volume there.
+
+```sh
+docker run -d --name wa-gateway \
+  --restart unless-stopped \
+  -p 3005:3005 \
+  -v wa-gateway-data:/data \
+  -e WHATSAPP_API_KEY="<openssl rand -hex 32>" \
+  -e WHATSAPP_CONSOLE_EMAIL="admin@example.com" \
+  -e WHATSAPP_CONSOLE_PASSWORD="a-long-password" \
+  ghcr.io/ridhotamma/wa-gateway:latest
+```
+
+Open `http://localhost:3005/console` and sign in with the bootstrap admin. The
+image defaults to `NODE_ENV=production`, which marks the console cookie
+`Secure`; on a public host terminate TLS in front of the container (the
+Compose stack below does this with Caddy) or add `-e NODE_ENV=development` for
+plain-HTTP testing.
+
+Images are built for `linux/amd64` and `linux/arm64`. `latest` tracks `main`;
+releases also publish `1`, `1.0` and `1.0.0` tags, plus `sha-<commit>`. Pin a
+release tag in production:
+
+```sh
+docker pull ghcr.io/ridhotamma/wa-gateway:1.0.0
+```
+
+If the pull is denied, the GHCR package is still private: set its visibility to
+public under the package settings on GitHub, or authenticate with a token that
+has `read:packages`.
+
+To upgrade, pull the new tag, stop and remove the container, then run the same
+command again against the existing `wa-gateway-data` volume. Schema migrations
+run automatically at boot; take a backup first.
+
+### From source
 
 ```sh
 cp .env.example .env
@@ -241,15 +285,26 @@ always win; `.env.local` wins over `.env`.
 
 ### Docker Compose
 
+The Compose stack runs the gateway behind Caddy (automatic TLS). It can pull
+the published image or build from source:
+
 ```sh
 cp .env.example .env
 # fill WHATSAPP_API_KEY, WHATSAPP_CONSOLE_EMAIL/PASSWORD, WHATSAPP_DOMAIN
+
+# Prebuilt image:
+docker compose pull gateway
+docker compose up -d --no-build
+
+# Or build from this checkout:
 docker compose up -d --build
+
 docker compose logs -f gateway
 ```
 
 Caddy obtains and renews TLS for `WHATSAPP_DOMAIN` automatically. The gateway
-port is bound to localhost only.
+port is bound to localhost only. Set `WA_GATEWAY_IMAGE` in `.env` to pin a
+release instead of `ghcr.io/ridhotamma/wa-gateway:latest`.
 
 ### Backups
 
@@ -265,6 +320,13 @@ it from cron, e.g. every 6 hours:
 
 The archive contains live credentials and customer phone numbers; store it
 like a password file.
+
+Inside a container, the same backup runs with the bundled CLI:
+
+```sh
+docker exec wa-gateway node dist/cli/backup.js /data/backups/gateway.db
+docker cp wa-gateway:/data/backups/gateway.db ./gateway-backup.db
+```
 
 ### Data residency
 

@@ -4,6 +4,28 @@
   "private": true,
   "type": "module",
   "description": "Standalone WhatsApp gateway: Baileys transport, SQLite outbox and a Hono REST API with a Polaris-style console.",
+  "keywords": [
+    "whatsapp",
+    "whatsapp-api",
+    "whatsapp-gateway",
+    "baileys",
+    "hono",
+    "sqlite",
+    "outbox",
+    "qr-code",
+    "rest-api",
+    "self-hosted",
+    "typescript",
+    "docker"
+  ],
+  "homepage": "https://github.com/ridhotamma/wa-gateway#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ridhotamma/wa-gateway.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ridhotamma/wa-gateway/issues"
+  },
   "engines": {
     "node": ">=22.0.0"
   },

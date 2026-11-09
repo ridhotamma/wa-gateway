@@ -32,6 +32,12 @@ RUN npm ci --omit=dev && npm cache clean --force
 FROM node:22-bookworm-slim AS runtime
 WORKDIR /app
 
+LABEL org.opencontainers.image.title="wa-gateway" \
+      org.opencontainers.image.description="Self-hosted WhatsApp gateway with a durable SQLite outbox, QR pairing, REST API and admin console." \
+      org.opencontainers.image.source="https://github.com/ridhotamma/wa-gateway" \
+      org.opencontainers.image.url="https://github.com/ridhotamma/wa-gateway" \
+      org.opencontainers.image.documentation="https://github.com/ridhotamma/wa-gateway#readme"
+
 ENV NODE_ENV=production \
     PORT=3005 \
     WHATSAPP_DATABASE_PATH=/data/gateway.db \

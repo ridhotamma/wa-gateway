@@ -13,8 +13,14 @@
 #      (openssl rand -hex 32), WHATSAPP_CONSOLE_EMAIL,
 #      WHATSAPP_CONSOLE_PASSWORD, WHATSAPP_DOMAIN and the other variables
 #      listed in .env.example.
-#   2. From the repo root: docker compose up -d --build
+#   2. From the repo root, either pull the published image:
+#        docker compose pull gateway && docker compose up -d --no-build
+#      or build from source:
+#        docker compose up -d --build
 #   3. Schedule scripts/backup-volumes.sh (see its header).
+#
+# Set WA_GATEWAY_IMAGE in .env to pin a release instead of :latest, e.g.
+# WA_GATEWAY_IMAGE="ghcr.io/ridhotamma/wa-gateway:1.0.0".
 #
 # Everything durable lives in the whatsapp-data volume: gateway.db (settings,
 # API keys, console admins/sessions, outbox, WhatsApp credentials, audit) and
@@ -26,10 +32,10 @@ name: wa-gateway
 
 services:
   gateway:
+    image: ${WA_GATEWAY_IMAGE:-ghcr.io/ridhotamma/wa-gateway:latest}
     build:
       context: .
       dockerfile: Dockerfile
-    image: wa-gateway:latest
     restart: unless-stopped
     mem_limit: 2g # Baileys is ~15-40MB per session; raise with seller count
     stop_grace_period: 20s # time to close sockets cleanly on deploy
