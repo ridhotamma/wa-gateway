@@ -127,7 +127,14 @@ export function createConsoleApp(deps: ConsoleDependencies): Hono<AppEnv> {
       if (!result) throw new Error('The account was created but sign-in failed.')
       deps.audit.record(admin.email, 'console.setup', admin.email)
       setSessionCookie(c, result.token, deps.config)
-      return c.redirect('/console', 303)
+      return redirectFlash(
+        c,
+        deps.config.apiKeySource === 'generated' ? '/console/api-keys' : '/console',
+        'success',
+        deps.config.apiKeySource === 'generated'
+          ? 'Admin created. Copy the bootstrap API key below for your integration.'
+          : 'Admin created.',
+      )
     } catch (error) {
       return htmlPage(
         String(

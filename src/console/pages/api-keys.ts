@@ -48,7 +48,9 @@ export function renderApiKeys(
               active.length === 0
                 ? emptyState(
                     'No console-created keys',
-                    'The environment key still works, but create a named key for each caller.',
+                    deps.config.apiKey
+                      ? 'The bootstrap key still works, but create a named key for each caller.'
+                      : 'Create a named key for each caller.',
                   )
                 : html`<div class="scroll">
                     <table>
@@ -142,14 +144,42 @@ export function renderApiKeys(
           </div>
 
           <div class="card">
-            ${cardHead('Environment key')}
-            <p class="hint">
-              Set with <span class="mono">WHATSAPP_API_KEY</span> at deploy time. It is permanent
-              and cannot be revoked from the console.
-            </p>
-            <p>
-              ${deps.config.apiKey ? badge('Configured', 'success') : badge('Not configured', 'attention')}
-            </p>
+            ${
+              deps.config.apiKeySource === 'generated'
+                ? html`${cardHead('Bootstrap API key')}
+                    <p class="hint">
+                      Generated on first boot and stored at
+                      <span class="mono clip">${deps.config.apiKeyFile}</span>. Copy it into your
+                      integration, or create a named key below.
+                    </p>
+                    <div class="copy-row">
+                      <input
+                        id="bootstrap-api-key"
+                        class="mono"
+                        value="${deps.config.apiKey}"
+                        readonly
+                      />
+                      <button type="button" class="btn" data-copy-target="#bootstrap-api-key">
+                        ${icon('copy')}Copy
+                      </button>
+                    </div>
+                    <p class="subdued" style="margin:8px 0 0">
+                      Permanent; cannot be revoked from the console. It also signs outbound
+                      webhooks.
+                    </p>`
+                : html`${cardHead('Environment key')}
+                    <p class="hint">
+                      Set with <span class="mono">WHATSAPP_API_KEY</span> at deploy time. It is
+                      permanent and cannot be revoked from the console.
+                    </p>
+                    <p>
+                      ${
+                        deps.config.apiKey
+                          ? badge('Configured', 'success')
+                          : badge('Not configured', 'attention')
+                      }
+                    </p>`
+            }
           </div>
         </div>
       </div>

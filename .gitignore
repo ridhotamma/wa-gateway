@@ -7,6 +7,9 @@ coverage/
 .whatsapp-data/
 .data/
 
+# Generated bootstrap API key (production, when WHATSAPP_API_KEY is unset).
+bootstrap-api-key
+
 # Secrets
 .env
 .env.*

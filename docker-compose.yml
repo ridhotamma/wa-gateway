@@ -9,10 +9,9 @@
 # commits to (ap-southeast-1 for Pesanle). Do not move it casually.
 #
 # One-time setup on the host (repo already cloned, DNS A record pointing here):
-#   1. Create .env (gitignored) with WHATSAPP_API_KEY
-#      (openssl rand -hex 32), WHATSAPP_CONSOLE_EMAIL,
-#      WHATSAPP_CONSOLE_PASSWORD, WHATSAPP_DOMAIN and the other variables
-#      listed in .env.example.
+#   1. Create .env (gitignored) with WHATSAPP_DOMAIN and the other variables
+#      listed in .env.example. WHATSAPP_API_KEY and the console admin are
+#      optional: leave them empty and finish setup at /console/setup.
 #   2. From the repo root, either pull the published image:
 #        docker compose pull gateway && docker compose up -d --no-build
 #      or build from source:

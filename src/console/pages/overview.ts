@@ -5,7 +5,7 @@ import type { Html } from '../html.js'
 import type { Flash } from '../layout.js'
 import { shell } from '../layout.js'
 import type { ConsoleDependencies } from '../types.js'
-import { cardHead, emptyState, header, icon, stat } from '../ui.js'
+import { alert, cardHead, emptyState, header, icon, stat } from '../ui.js'
 import { html } from '../html.js'
 
 export function renderOverview(deps: ConsoleDependencies, admin: ConsoleAdmin, flash: Flash): Html {
@@ -27,6 +27,15 @@ export function renderOverview(deps: ConsoleDependencies, admin: ConsoleAdmin, f
             >${icon('lightning')}Send a message</a
           >`,
       })}
+      ${
+        deps.config.apiKeySource === 'generated' && keys.length === 0
+          ? alert(
+              'info',
+              html`Your bootstrap API key is ready.
+                <a href="/console/api-keys">Copy it from API keys</a> before connecting a client.`,
+            )
+          : ''
+      }
       <div class="stats">
         ${stat('Sessions', sessions.length, '/console/sessions')}
         ${stat('Ready', ready, '/console/sessions')}
@@ -164,7 +173,15 @@ export function renderOverview(deps: ConsoleDependencies, admin: ConsoleAdmin, f
               </li>
               <li>
                 <span class="subdued">Bootstrap API key</span
-                ><span>${deps.config.apiKey ? 'configured' : 'not set'}</span>
+                ><span
+                  >${
+                    deps.config.apiKeySource === 'generated'
+                      ? 'generated'
+                      : deps.config.apiKey
+                        ? 'configured'
+                        : 'not set'
+                  }</span
+                >
               </li>
             </ul>
           </div>

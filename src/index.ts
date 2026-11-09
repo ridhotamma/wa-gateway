@@ -1,3 +1,4 @@
+import { ensureBootstrapApiKey } from './bootstrap-api-key.js'
 import { loadConfig, loadEnvFiles } from './config.js'
 import { openDatabase } from './db/database.js'
 import { SqliteWhatsAppAuthStore } from './db/whatsapp-auth-store.js'
@@ -19,6 +20,7 @@ async function main(): Promise<void> {
   loadEnvFiles()
   const config = loadConfig()
   const logger = createLogger(config.logLevel)
+  ensureBootstrapApiKey(config, logger)
   const instanceId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
 
   const db = openDatabase(config.databasePath)
@@ -124,7 +126,10 @@ async function main(): Promise<void> {
     {
       database: config.databasePath,
       media: config.mediaDir,
-      auth: config.apiKey ? 'enabled' : 'DISABLED (set WHATSAPP_API_KEY)',
+      auth: config.apiKey
+        ? `enabled (${config.apiKeySource === 'generated' ? 'generated bootstrap key' : 'environment key'})`
+        : 'DISABLED (development only)',
+      bootstrapKeyFile: config.apiKeyFile ?? undefined,
       console: config.console.enabled ? 'enabled at /console' : 'disabled',
       inboundForwarding: runtime.inbound.urlTemplate ? 'enabled' : 'disabled',
       statusReporting: runtime.inbound.statusUrlTemplate ? 'enabled' : 'disabled',
@@ -137,7 +142,9 @@ async function main(): Promise<void> {
 
   if (config.console.enabled && consoleAuth.countAdmins() === 0) {
     logger.warn(
-      'no console admin exists yet: open /console/setup to create one, or set WHATSAPP_CONSOLE_EMAIL and WHATSAPP_CONSOLE_PASSWORD',
+      config.apiKeySource === 'generated'
+        ? 'no console admin exists yet: open /console/setup to create one, then copy the generated API key from /console/api-keys'
+        : 'no console admin exists yet: open /console/setup to create one, or set WHATSAPP_CONSOLE_EMAIL and WHATSAPP_CONSOLE_PASSWORD',
     )
   }
 

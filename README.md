@@ -55,17 +55,23 @@ docker run -d --name wa-gateway \
   --restart unless-stopped \
   -p 3005:3005 \
   -v wa-gateway-data:/data \
-  -e WHATSAPP_API_KEY="<openssl rand -hex 32>" \
-  -e WHATSAPP_CONSOLE_EMAIL="admin@example.com" \
-  -e WHATSAPP_CONSOLE_PASSWORD="a-long-password" \
   ghcr.io/ridhotamma/wa-gateway:latest
 ```
 
-Open `http://localhost:3005/console` and sign in with the bootstrap admin. The
-image defaults to `NODE_ENV=production`, which marks the console cookie
-`Secure`; on a public host terminate TLS in front of the container (the
-Compose stack below does this with Caddy) or add `-e NODE_ENV=development` for
-plain-HTTP testing.
+Open `http://localhost:3005/console/setup` to create the first admin. The next
+screen shows the generated bootstrap API key; copy it into your integration or
+create named keys later under **API keys**. No environment variables are
+required: on first boot the gateway generates `WHATSAPP_API_KEY`, stores it in
+`/data/bootstrap-api-key`, and keeps it across restarts.
+
+You can still pass `WHATSAPP_API_KEY`, `WHATSAPP_CONSOLE_EMAIL` and
+`WHATSAPP_CONSOLE_PASSWORD` with `-e` to skip those setup steps, which is handy
+for automated deployments.
+
+The image defaults to `NODE_ENV=production`, which marks the console cookie
+`Secure`. Secure cookies work on `http://localhost`; for a remote host use the
+Compose stack below with TLS (Caddy), or an SSH tunnel such as
+`ssh -L 3005:127.0.0.1:3005 user@host`, rather than exposing plain HTTP.
 
 Images are built for `linux/amd64` and `linux/arm64`. `latest` tracks `main`;
 releases also publish `1`, `1.0` and `1.0.0` tags, plus `sha-<commit>`. Pin a
@@ -87,7 +93,7 @@ run automatically at boot; take a backup first.
 
 ```sh
 cp .env.example .env
-# set WHATSAPP_API_KEY
+# optional: set WHATSAPP_API_KEY, WHATSAPP_CONSOLE_EMAIL/PASSWORD
 npm install
 npm run dev
 ```
@@ -136,8 +142,10 @@ only its SHA-256 hash. Cookies are `HttpOnly`, `SameSite=Lax`, scoped to
 
 Until the first admin exists, `/console/setup` is claimable by whoever reaches
 it first. On production, seed the admin from `WHATSAPP_CONSOLE_EMAIL` and
-`WHATSAPP_CONSOLE_PASSWORD`, or finish setup immediately after deployment. The
-`console:admin` CLI can reset a password if the account is locked out.
+`WHATSAPP_CONSOLE_PASSWORD`, or finish setup immediately after deployment.
+After setup, the API keys page shows the generated bootstrap key when the
+environment key was not supplied. The `console:admin` CLI can reset a password
+if the account is locked out.
 
 If login says **"Cross-site request refused."** behind a reverse proxy, set
 `WHATSAPP_CONSOLE_URL` to the public origin (for example
@@ -150,6 +158,8 @@ If login says **"Cross-site request refused."** behind a reverse proxy, set
 All routes except public liveness require an API key, as
 `x-api-key: <key>` or `Authorization: Bearer <key>`. The environment key
 (`WHATSAPP_API_KEY`) is permanent; keys created in the console can be revoked.
+When the environment key is missing, production generates one on first boot and
+shows it in the console after setup.
 
 | Method | Path                           | Purpose                                     |
 | ------ | ------------------------------ | ------------------------------------------- |
@@ -259,19 +269,19 @@ SQLite and editable from the console. The outbox/typing/webhook/media/session
 variables in `.env` seed SQLite on first boot only; after that, the console is
 the source of truth. See [`.env.example`](./.env.example).
 
-| Variable                         | Default                        | Notes                                     |
-| -------------------------------- | ------------------------------ | ----------------------------------------- |
-| `NODE_ENV`                       | `development`                  | `production` requires `WHATSAPP_API_KEY`  |
-| `HOST` / `PORT`                  | `0.0.0.0` / `3005`             |                                           |
-| `WHATSAPP_LOG_LEVEL`             | `info`                         | pino level                                |
-| `WHATSAPP_API_KEY`               | empty                          | **Required in production**; permanent key |
-| `WHATSAPP_DATABASE_PATH`         | `./.whatsapp-data/gateway.db`  | SQLite file                               |
-| `WHATSAPP_MEDIA_DIR`             | `./.whatsapp-data/media`       | Attachment bytes                          |
-| `WHATSAPP_CONSOLE_ENABLED`       | `true`                         | Set `false` to hide `/console`            |
-| `WHATSAPP_CONSOLE_EMAIL`         | empty                          | Bootstrap admin only                      |
-| `WHATSAPP_CONSOLE_PASSWORD`      | empty                          | Bootstrap admin only (min 10 characters)  |
-| `WHATSAPP_CONSOLE_SESSION_HOURS` | `168`                          | Console session lifetime                  |
-| `WHATSAPP_CONSOLE_URL`           | derived from `WHATSAPP_DOMAIN` | Public console origin for CSRF checks     |
+| Variable                         | Default                        | Notes                                                                        |
+| -------------------------------- | ------------------------------ | ---------------------------------------------------------------------------- |
+| `NODE_ENV`                       | `development`                  | `production` enables secure cookies and key generation                       |
+| `HOST` / `PORT`                  | `0.0.0.0` / `3005`             |                                                                              |
+| `WHATSAPP_LOG_LEVEL`             | `info`                         | pino level                                                                   |
+| `WHATSAPP_API_KEY`               | empty                          | Optional; production generates one on first boot and shows it in the console |
+| `WHATSAPP_DATABASE_PATH`         | `./.whatsapp-data/gateway.db`  | SQLite file                                                                  |
+| `WHATSAPP_MEDIA_DIR`             | `./.whatsapp-data/media`       | Attachment bytes                                                             |
+| `WHATSAPP_CONSOLE_ENABLED`       | `true`                         | Set `false` to hide `/console`                                               |
+| `WHATSAPP_CONSOLE_EMAIL`         | empty                          | Bootstrap admin only; otherwise use `/console/setup`                         |
+| `WHATSAPP_CONSOLE_PASSWORD`      | empty                          | Bootstrap admin only (min 10 characters)                                     |
+| `WHATSAPP_CONSOLE_SESSION_HOURS` | `168`                          | Console session lifetime                                                     |
+| `WHATSAPP_CONSOLE_URL`           | derived from `WHATSAPP_DOMAIN` | Public console origin for CSRF checks                                        |
 
 The Settings page controls outbox gap/jitter/cap/retries, typing simulation,
 inbound/status webhook URLs and timeouts, media limits and retention, pairing
@@ -290,7 +300,8 @@ the published image or build from source:
 
 ```sh
 cp .env.example .env
-# fill WHATSAPP_API_KEY, WHATSAPP_CONSOLE_EMAIL/PASSWORD, WHATSAPP_DOMAIN
+# optionally fill WHATSAPP_API_KEY, WHATSAPP_CONSOLE_EMAIL/PASSWORD, WHATSAPP_DOMAIN
+# (leave the key and admin empty to finish setup in /console/setup)
 
 # Prebuilt image:
 docker compose pull gateway

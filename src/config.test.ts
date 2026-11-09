@@ -38,10 +38,11 @@ describe('loadConfig', () => {
     expect(config.console.sessionTtlMs).toBe(12 * 60 * 60_000)
   })
 
-  test('refuses to start production without an API key', () => {
-    expect(() => loadConfig({ NODE_ENV: 'production' })).toThrow(
-      'WHATSAPP_API_KEY is required when NODE_ENV=production.',
-    )
+  test('allows production to start without an API key so first-run setup can create one', () => {
+    const config = loadConfig({ NODE_ENV: 'production' })
+    expect(config.apiKey).toBe('')
+    expect(config.apiKeySource).toBe('none')
+    expect(config.apiKeyFile).toBeNull()
   })
 
   test('derives the status callback from the inbound one', () => {

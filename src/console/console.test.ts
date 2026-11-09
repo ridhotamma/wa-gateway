@@ -260,6 +260,26 @@ describe('console auth', () => {
     expect(auth.countAdmins()).toBe(1)
     expect(auth.findAdminByEmail('owner@example.com')).not.toBeNull()
   })
+
+  test('sends a new admin to the bootstrap API key after setup', async () => {
+    db.prepare('DELETE FROM console_admins').run()
+    config.apiKey = 'wa_generated_bootstrap_key_1234567890'
+    config.apiKeySource = 'generated'
+    config.apiKeyFile = '/data/bootstrap-api-key'
+
+    const created = await app.request('/console/setup', {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: form({
+        email: 'owner@example.com',
+        password: 'another-long-password',
+        confirm: 'another-long-password',
+      }),
+    })
+
+    expect(created.status).toBe(303)
+    expect(created.headers.get('location')).toMatch(/^\/console\/api-keys\?ok=/)
+  })
 })
 
 describe('console pages', () => {
@@ -326,6 +346,20 @@ describe('console pages', () => {
       headers: { 'x-api-key': key! },
     })
     expect(rejected.status).toBe(401)
+  })
+
+  test('shows the generated bootstrap key to a signed-in admin', async () => {
+    const cookie = await signIn()
+    config.apiKey = 'wa_generated_bootstrap_key_1234567890'
+    config.apiKeySource = 'generated'
+    config.apiKeyFile = '/data/bootstrap-api-key'
+
+    const response = await app.request('/console/api-keys', { headers: { cookie } })
+    expect(response.status).toBe(200)
+    const body = await response.text()
+    expect(body).toContain('Bootstrap API key')
+    expect(body).toContain('wa_generated_bootstrap_key_1234567890')
+    expect(body).toContain('/data/bootstrap-api-key')
   })
 
   test('saves settings and applies them without a restart', async () => {

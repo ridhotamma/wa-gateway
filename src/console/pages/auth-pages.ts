@@ -43,7 +43,8 @@ export function renderSetup(error?: string, email = ''): Html {
       <div class="card">
         <h2>Create the first admin</h2>
         <p class="hint">
-          No console admin exists yet. Create one now; after this page, setup is closed.
+          No console admin exists yet. Create one now; after this page, setup is closed and the
+          gateway shows you its API key.
         </p>
         ${error ? alert('critical', html`${error}`) : ''}
         <form method="post" action="/console/setup">
@@ -75,7 +76,7 @@ export function renderSetup(error?: string, email = ''): Html {
         </form>
       </div>
       <p class="subdued" style="text-align:center;margin-top:12px">
-        In production, set WHATSAPP_CONSOLE_EMAIL and WHATSAPP_CONSOLE_PASSWORD to seed this account
+        You can also set WHATSAPP_CONSOLE_EMAIL and WHATSAPP_CONSOLE_PASSWORD to seed this account
         automatically.
       </p>
     `,

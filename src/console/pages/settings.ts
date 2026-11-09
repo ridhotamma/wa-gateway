@@ -286,7 +286,15 @@ export function renderSettings(
               </li>
               <li>
                 <span class="subdued">Bootstrap API key</span>
-                <span>${deps.config.apiKey ? 'configured' : 'not set'}</span>
+                <span
+                  >${
+                    deps.config.apiKeySource === 'generated'
+                      ? 'generated'
+                      : deps.config.apiKey
+                        ? 'configured'
+                        : 'not set'
+                  }</span
+                >
               </li>
             </ul>
             <form

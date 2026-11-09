@@ -46,14 +46,23 @@ export interface ConsoleConfig {
   publicUrl: string | null
 }
 
+export type ApiKeySource = 'env' | 'generated' | 'none'
+
 export interface Config {
   nodeEnv: 'development' | 'test' | 'production'
   isProduction: boolean
   host: string
   port: number
   logLevel: LogLevel
-  /** Shared secret. Empty only in development; production refuses to start. */
+  /**
+   * Shared secret. Empty only in development; production generates and
+   * persists one on first boot when the environment value is missing.
+   */
   apiKey: string
+  /** Where `apiKey` came from. */
+  apiKeySource: ApiKeySource
+  /** File holding a generated bootstrap key, when apiKeySource is generated. */
+  apiKeyFile: string | null
   /** SQLite database: settings, keys, admins, outbox, credentials, audit. */
   databasePath: string
   /** Attachment bytes stay on disk; their metadata is in SQLite. */
@@ -107,10 +116,6 @@ export function loadConfig(
   const isProduction = nodeEnv === 'production'
   const apiKey = value(env.WHATSAPP_API_KEY) ?? ''
 
-  if (!apiKey && isProduction) {
-    throw new Error('WHATSAPP_API_KEY is required when NODE_ENV=production.')
-  }
-
   const inboundUrl = value(env.WHATSAPP_INBOUND_URL)
   const typingEnabled = readBoolean(env, 'WHATSAPP_TYPING', true)
   const configuredDomain = value(env.WHATSAPP_DOMAIN)
@@ -127,6 +132,8 @@ export function loadConfig(
     port: readNumber(env, 'PORT', 3005, { min: 0, max: 65_535 }),
     logLevel: readLogLevel(env, 'WHATSAPP_LOG_LEVEL', value(env.LOG_LEVEL), 'info'),
     apiKey,
+    apiKeySource: apiKey ? 'env' : 'none',
+    apiKeyFile: null,
     databasePath: resolvePath(cwd, value(env.WHATSAPP_DATABASE_PATH), '.whatsapp-data/gateway.db'),
     mediaDir: resolvePath(cwd, value(env.WHATSAPP_MEDIA_DIR), '.whatsapp-data/media'),
     console: {

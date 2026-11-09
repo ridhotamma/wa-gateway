@@ -4,6 +4,8 @@
 # The SQLite file is the only copy of every seller's WhatsApp pairing, the API
 # keys, console admins and queued notifications. Losing it means every seller
 # has to scan a QR code again and every integration needs a new API key.
+# A generated bootstrap API key (when WHATSAPP_API_KEY is unset) is stored in
+# bootstrap-api-key beside the database and is archived too.
 #
 # The database copy is made with better-sqlite3's online backup API inside the
 # running container (WAL-safe); media and Caddy data are tarred read-only.
@@ -79,12 +81,16 @@ docker compose exec -T "$SERVICE" sh -c \
   'mkdir -p /data/backups && rm -f /data/backups/gateway.db && node dist/cli/backup.js /data/backups/gateway.db'
 
 # 2. Archive the snapshot, media and Caddy state read-only while the daemon runs.
+ARCHIVE_MEMBERS="backups/gateway.db media"
+if docker compose exec -T "$SERVICE" test -f /data/bootstrap-api-key; then
+  ARCHIVE_MEMBERS="$ARCHIVE_MEMBERS bootstrap-api-key"
+fi
 docker run --rm \
   -v "${PROJECT}_whatsapp-data:/data:ro" \
   -v "${PROJECT}_caddy-data:/caddy:ro" \
   -v "$BACKUP_DIR:/out" \
   alpine:3 \
-  tar -czf "/out/wa-gateway-$STAMP.tar.gz" -C /data backups/gateway.db media -C /caddy .
+  tar -czf "/out/wa-gateway-$STAMP.tar.gz" -C /data $ARCHIVE_MEMBERS -C /caddy .
 
 # 3. Do not leave a second copy of the live database in the volume.
 docker compose exec -T "$SERVICE" rm -f /data/backups/gateway.db
@@ -109,5 +115,8 @@ find "$BACKUP_DIR" -name 'wa-gateway-*.tar.gz' -mtime +"$BACKUP_KEEP_DAYS" -dele
 #            && rm -f /data/gateway.db /data/gateway.db-wal /data/gateway.db-shm \
 #            && mv /data/backups/gateway.db /data/gateway.db && chown -R 1000:1000 /data'
 #   docker compose start gateway
+#
+# Add ./bootstrap-api-key to the tar member list when the archive contains it
+# (the environment key was unset at backup time).
 #
 # The Caddy archive member is at the root of the tar (certificates and config).
