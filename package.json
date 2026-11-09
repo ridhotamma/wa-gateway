@@ -1,6 +1,7 @@
 {
   "name": "wa-gateway",
   "version": "1.1.0",
+  "private": true,
   "type": "module",
   "description": "Standalone WhatsApp gateway: Baileys transport, SQLite outbox and a Hono REST API with a Polaris-style console.",
   "keywords": [
