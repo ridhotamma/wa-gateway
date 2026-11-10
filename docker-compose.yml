@@ -19,7 +19,7 @@
 #   3. Schedule scripts/backup-volumes.sh (see its header).
 #
 # Set WA_GATEWAY_IMAGE in .env to pin a release instead of :latest, e.g.
-# WA_GATEWAY_IMAGE="ghcr.io/ridhotamma/wa-gateway:1.1.0".
+# WA_GATEWAY_IMAGE="ghcr.io/ridhotamma/wa-gateway:1.2.0".
 #
 # Everything durable lives in the whatsapp-data volume: gateway.db (settings,
 # API keys, console admins/sessions, outbox, WhatsApp credentials, audit) and
