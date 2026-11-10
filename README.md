@@ -14,6 +14,8 @@ attachment bytes stay on disk.
 > **Run one replica only.** Sessions are live in-process sockets. A second
 > gateway using the same credentials will disconnect the first.
 
+![WhatsApp Gateway admin console: overview page](assets/screenshots/overview.png)
+
 ## Quick start
 
 ### Docker
