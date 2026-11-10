@@ -106,6 +106,53 @@ describe('health', () => {
   })
 })
 
+describe('API reference', () => {
+  test('serves the OpenAPI document without an API key', async () => {
+    const response = await app.request('/openapi.json')
+    expect(response.status).toBe(200)
+
+    const document = (await response.json()) as {
+      openapi: string
+      info: { title: string; version: string }
+      paths: Record<string, unknown>
+      components: { securitySchemes: Record<string, unknown> }
+    }
+    expect(document.openapi).toBe('3.0.0')
+    expect(document.info).toMatchObject({ title: 'WhatsApp Gateway API', version: '1.1.0' })
+    expect(document.components.securitySchemes).toMatchObject({
+      apiKey: { type: 'apiKey', in: 'header', name: 'x-api-key' },
+      bearerAuth: { type: 'http', scheme: 'bearer' },
+    })
+
+    for (const path of [
+      '/health',
+      '/sessions/{sessionId}/start',
+      '/sessions/{sessionId}/status',
+      '/sessions/{sessionId}/logout',
+      '/sessions/{sessionId}/rename',
+      '/sessions/{sessionId}/media/{mediaId}',
+      '/notify/text',
+      '/notify/media',
+      '/notify/buttons',
+      '/messages/send',
+      '/messages/send-media',
+      '/messages/send-buttons',
+    ]) {
+      expect(document.paths[path], path).toBeDefined()
+    }
+  })
+
+  test('serves the Scalar API reference without an API key', async () => {
+    const response = await app.request('/docs')
+    expect(response.status).toBe(200)
+    expect(response.headers.get('content-type')).toContain('text/html')
+
+    const html = await response.text()
+    expect(html).toContain('WhatsApp Gateway API')
+    expect(html).toContain('/openapi.json')
+  })
+})
+
 describe('authentication', () => {
   test('rejects a missing key', async () => {
     const response = await app.request('/sessions/shop/status')

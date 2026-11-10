@@ -131,6 +131,7 @@ async function main(): Promise<void> {
         : 'DISABLED (development only)',
       bootstrapKeyFile: config.apiKeyFile ?? undefined,
       console: config.console.enabled ? 'enabled at /console' : 'disabled',
+      apiDocs: 'enabled at /docs',
       inboundForwarding: runtime.inbound.urlTemplate ? 'enabled' : 'disabled',
       statusReporting: runtime.inbound.statusUrlTemplate ? 'enabled' : 'disabled',
     },

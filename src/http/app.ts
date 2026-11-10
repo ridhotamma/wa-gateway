@@ -1,7 +1,8 @@
 import { fileURLToPath } from 'node:url'
 
+import { OpenAPIHono, type Hook } from '@hono/zod-openapi'
+import { Scalar } from '@scalar/hono-api-reference'
 import { serveStatic } from '@hono/node-server/serve-static'
-import { Hono } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
 import { HTTPException } from 'hono/http-exception'
 import { secureHeaders } from 'hono/secure-headers'
@@ -32,8 +33,20 @@ export interface AppDependencies extends ConsoleDependencies {
   instanceId: string
 }
 
-export function createApp(dependencies: AppDependencies): Hono<AppEnv> {
-  const app = new Hono<AppEnv>()
+export function createApp(dependencies: AppDependencies): OpenAPIHono<AppEnv> {
+  const app = new OpenAPIHono<AppEnv>({ defaultHook: validationError })
+
+  app.openAPIRegistry.registerComponent('securitySchemes', 'apiKey', {
+    type: 'apiKey',
+    in: 'header',
+    name: 'x-api-key',
+    description: 'A key created in the console, or the bootstrap `WHATSAPP_API_KEY`.',
+  })
+  app.openAPIRegistry.registerComponent('securitySchemes', 'bearerAuth', {
+    type: 'http',
+    scheme: 'bearer',
+    description: 'The same API key, sent as `Authorization: Bearer <key>`.',
+  })
 
   app.use('*', requestContext(dependencies.logger))
   app.use('*', secureHeaders())
@@ -67,6 +80,42 @@ export function createApp(dependencies: AppDependencies): Hono<AppEnv> {
       outbox: dependencies.outbox,
       apiKeys: dependencies.apiKeys,
       instanceId: dependencies.instanceId,
+    }),
+  )
+
+  // The OpenAPI document and its reference UI stay public: they contain no
+  // secrets, and the API key is entered in the UI, not fetched with the page.
+  app.doc('/openapi.json', {
+    openapi: '3.0.0',
+    info: {
+      title: 'WhatsApp Gateway API',
+      version: '1.1.0',
+      description: [
+        'REST API for the self-hosted WhatsApp gateway.',
+        'All endpoints except `GET /health` require an API key, sent as `x-api-key: <key>` or `Authorization: Bearer <key>`. When no key is configured (development only), requests are allowed.',
+        'Use the queued `/notify/*` endpoints for integrations: they return `202` immediately and the durable SQLite outbox retries and paces delivery. Use `/messages/*` for direct sends that report the result inline.',
+      ].join('\n\n'),
+    },
+    servers: [{ url: '/', description: 'This gateway' }],
+    tags: [
+      { name: 'Health', description: 'Liveness and inventory.' },
+      { name: 'Sessions', description: 'Pair, inspect, rename and unlink WhatsApp sessions.' },
+      {
+        name: 'Notifications',
+        description: 'Durable queued messages, retried and paced by the outbox.',
+      },
+      { name: 'Messages', description: 'Direct sends through a ready session.' },
+    ],
+  })
+
+  app.get(
+    '/docs',
+    Scalar({
+      url: '/openapi.json',
+      pageTitle: 'WhatsApp Gateway API',
+      theme: 'default',
+      authentication: { preferredSecurityScheme: 'apiKey' },
+      defaultOpenAllTags: true,
     }),
   )
 
@@ -109,11 +158,35 @@ export function createApp(dependencies: AppDependencies): Hono<AppEnv> {
         error.status,
       )
     }
-    if (error instanceof HTTPException) return error.getResponse()
+    if (error instanceof HTTPException) {
+      // The JSON validator reports malformed bodies before our hook runs.
+      if (error.status === 400 && error.message === 'Malformed JSON in request body') {
+        return c.json({ ok: false, error: 'Invalid JSON body.' }, 400)
+      }
+      return error.getResponse()
+    }
 
     c.get('logger').error({ err: error }, 'unhandled request error')
     return c.json({ ok: false, error: 'Internal error' }, 500)
   })
 
   return app
+}
+
+/**
+ * Keep the API's existing validation contract: a 400 with one field-specific
+ * message rather than Zod's full issue list.
+ */
+const validationError: Hook<any, AppEnv, any, any> = (result, c) => {
+  if (result.success) return
+
+  if (result.target === 'param') {
+    const field = result.error.issues[0]?.path.join('.') ?? ''
+    if (field === 'mediaId') return c.json({ ok: false, error: 'Invalid media id.' }, 400)
+    return c.json({ ok: false, error: 'Invalid sessionId. Use 1-64 chars of [a-zA-Z0-9_-].' }, 400)
+  }
+
+  const issue = result.error.issues[0]
+  const field = issue?.path.join('.') || '(root)'
+  return c.json({ ok: false, error: `Invalid body: ${field} ${issue?.message ?? ''}`.trim() }, 400)
 }

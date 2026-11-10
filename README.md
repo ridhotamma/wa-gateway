@@ -78,6 +78,16 @@ x-api-key: <key>
 
 `Authorization: Bearer <key>` also works. `GET /health` is public.
 
+### Interactive API reference
+
+Open `http://localhost:3005/docs` for a [Scalar](https://scalar.com) API
+reference. The underlying OpenAPI 3.0 document is served at
+`GET /openapi.json`. Both are public and need no key to load; click
+**Authorize** in the reference and paste an API key to send test requests.
+
+The document is generated from the same Zod schemas that validate requests at
+runtime, so it tracks the routes instead of drifting from them.
+
 | Method | Path                           | Description                              |
 | ------ | ------------------------------ | ---------------------------------------- |
 | GET    | `/health`                      | Liveness; inventory when authenticated   |
