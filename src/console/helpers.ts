@@ -89,7 +89,8 @@ export function engineBadge(status: string | null | undefined): Html {
           : status
             ? 'info'
             : ''
-  return badge(status ? status.replaceAll('_', ' ') : 'not connected', tone)
+  const label = status ? status.replaceAll('_', ' ') : 'not connected'
+  return badge(label[0]!.toUpperCase() + label.slice(1), tone)
 }
 
 export function engineStatusTone(status: EngineStatus | null | undefined): string {

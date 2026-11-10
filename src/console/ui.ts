@@ -84,13 +84,27 @@ export function icon(name: IconName, size = 16, className = ''): Html {
   </svg>`
 }
 
-/** Polaris page header: back link, title (with optional context line), status badges, then actions with at most one primary. */
-/** Every page header is the same: an optional back arrow, the page name, and optional actions. */
-export function header(title: string, opts: { back?: string; actions?: Html } = {}): Html {
+export interface HeaderOptions {
+  back?: string
+  actions?: Html
+  /** One line under the title saying what the page is for. */
+  description?: Html | string
+  /** Badges beside the title, such as a live status. */
+  meta?: Html
+  /** Render the title in monospace (for ids). */
+  mono?: boolean
+}
+
+/** Every page header is the same: an optional back arrow, the title and its line, then actions. */
+export function header(title: string, opts: HeaderOptions = {}): Html {
   return html`<div class="header">
     ${opts.back ? html`<a class="back" href="${opts.back}" aria-label="Back">${icon('arrow-left')}</a>` : ''}
     <div class="header-main">
-      <div class="header-title"><h1>${title}</h1></div>
+      <div class="header-title">
+        <h1 class="${opts.mono ? 'mono' : ''}" title="${title}">${title}</h1>
+        ${opts.meta ?? ''}
+      </div>
+      ${opts.description ? html`<p class="header-sub">${opts.description}</p>` : ''}
     </div>
     ${opts.actions ? html`<div class="actions">${opts.actions}</div>` : ''}
   </div>`
@@ -131,7 +145,7 @@ export function tabs(items: readonly TabItem[], active: string): Html {
   </nav>`
 }
 
-/** A settings block: title and explanation on the left, its card on the right (stacked on phones). */
+/** A settings block: title and explanation on the left, its card on the right (stacked on narrow screens). */
 export function settingsSection(
   title: string,
   hint: Html | string,
@@ -139,16 +153,14 @@ export function settingsSection(
   options: { id?: string; badge?: Html; flush?: boolean; attrs?: Html } = {},
 ): Html {
   return html`<section
-    class="settings-section"
+    class="section"
     ${options.id ? html`id="${options.id}"` : ''}
     ${options.attrs ?? ''}
   >
-    <div class="settings-aside">
-      <div class="settings-heading">
-        <h2>${title}</h2>
-        ${options.badge ? html`<span class="settings-badge">${options.badge}</span>` : ''}
-      </div>
-      <p class="subdued">${hint}</p>
+    <div class="section-aside">
+      <h2>${title}</h2>
+      <p>${hint}</p>
+      ${options.badge ?? ''}
     </div>
     <div class="card ${options.flush ? 'flush' : ''}">${body}</div>
   </section>`
@@ -198,8 +210,14 @@ export function statusBadge(status: string): Html {
   return html`<span class="badge ${tone}">${status[0]!.toUpperCase() + status.slice(1)}</span>`
 }
 
-export function emptyState(heading: string, text: string, action?: Html): Html {
+export function emptyState(
+  heading: string,
+  text: string,
+  action?: Html,
+  iconName: IconName = 'info',
+): Html {
   return html`<div class="empty">
+    <span class="empty-icon">${icon(iconName, 20)}</span>
     <h3>${heading}</h3>
     <p>${text}</p>
     ${action ?? ''}
@@ -263,11 +281,21 @@ export const plural = (n: number, word: string) =>
 export const when = (iso: string | null | undefined) =>
   iso ? iso.slice(0, 16).replace('T', ' ') : '—'
 
-export function stat(label: string, value: string | number, href?: string): Html {
-  return html`<div class="stat">
-    <span>${label}</span
-    ><b>${href ? html`<a href="${href}" style="color:inherit">${value}</a>` : value}</b>
-  </div>`
+/** One cell of a `.stats` strip. Pass `href` to make the whole cell a link. */
+export function stat(
+  label: string,
+  value: Html | string | number,
+  options: { href?: string; sub?: Html | string; small?: boolean; id?: string } = {},
+): Html {
+  const inner = html`<span class="stat-label">${label}</span
+    ><span
+      class="stat-value ${options.small ? 'sm' : ''}"
+      ${options.id ? html`id="${options.id}"` : ''}
+      >${value}</span
+    >${options.sub !== undefined ? html`<span class="stat-sub">${options.sub}</span>` : ''}`
+  return options.href
+    ? html`<a class="stat" href="${options.href}">${inner}</a>`
+    : html`<div class="stat">${inner}</div>`
 }
 
 export interface SearchOptions {

@@ -4,6 +4,7 @@ import { timeAgo, when } from '../helpers.js'
 import type { Flash } from '../layout.js'
 import { shell } from '../layout.js'
 import type { ConsoleDependencies } from '../types.js'
+import { dialog } from '../dialog.js'
 import { badge, cardHead, emptyState, header, icon } from '../ui.js'
 
 export function renderApiKeys(
@@ -20,28 +21,40 @@ export function renderApiKeys(
     'API keys',
     { section: 'api-keys', admin: admin.email },
     html`
-      ${header('API keys')}
+      ${header('API keys', {
+        description:
+          'Keys authenticate API clients. Use one per caller so each can be revoked alone.',
+      })}
       ${
         createdKey
-          ? html`<div class="card" style="border:1px solid var(--success)">
-              ${cardHead('Copy this key now')}
-              <p class="hint">
-                This is the only time the full key is shown. Store it in the service that sends
-                notifications.
-              </p>
-              <div class="copy-row">
-                <input id="new-api-key" class="mono" value="${createdKey.key}" readonly />
-                <button type="button" class="btn" data-copy-target="#new-api-key">
-                  ${icon('copy')}Copy
-                </button>
-              </div>
-              <p class="subdued" style="margin:8px 0 0">Key <b>${createdKey.name}</b> is active.</p>
-            </div>`
+          ? dialog({
+              id: 'new-key-dialog',
+              title: 'Copy this key now',
+              open: true,
+              wide: true,
+              body: html`<p class="dialog-message">
+                  This is the only time the full key for <b>${createdKey.name}</b> is shown. Store
+                  it in the service that sends notifications.
+                </p>
+                <div class="copy-row" style="margin-top:16px">
+                  <input
+                    id="new-api-key"
+                    class="mono"
+                    value="${createdKey.key}"
+                    aria-label="New API key"
+                    readonly
+                  />
+                  <button type="button" data-copy-target="#new-api-key">
+                    ${icon('copy')}<span data-copy-label>Copy</span>
+                  </button>
+                </div>`,
+              actions: html`<button type="button" class="primary" data-dialog-close>Done</button>`,
+            })
           : ''
       }
 
-      <div class="layout">
-        <div>
+      <div class="grid">
+        <div class="col">
           <div class="card flush">
             ${cardHead('Active keys', badge(String(active.length), active.length ? 'success' : ''))}
             ${
@@ -51,52 +64,56 @@ export function renderApiKeys(
                     deps.config.apiKey
                       ? 'The bootstrap key still works, but create a named key for each caller.'
                       : 'Create a named key for each caller.',
+                    undefined,
+                    'key',
                   )
-                : html`<div class="scroll">
-                    <table>
-                      <thead>
-                        <tr>
-                          <th>Name</th>
-                          <th>Prefix</th>
-                          <th>Created</th>
-                          <th>Last used</th>
-                          <th></th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        ${active.map(
-                          (key) =>
-                            html`<tr>
-                              <td><b>${key.name}</b></td>
-                              <td class="mono">${key.prefix}…</td>
-                              <td class="nowrap subdued">${when(key.createdAt)}</td>
-                              <td class="nowrap subdued">${timeAgo(key.lastUsedAt)}</td>
-                              <td class="num">
-                                <form
-                                  method="post"
-                                  action="/console/api-keys/${key.id}/revoke"
-                                  class="inline"
-                                  data-confirm="Revoke ${key.name}? Any service using it will get 401 immediately."
-                                  data-confirm-label="Revoke key"
-                                  data-confirm-tone="critical"
-                                >
-                                  <button class="critical small">Revoke</button>
-                                </form>
-                              </td>
-                            </tr>`,
-                        )}
-                      </tbody>
-                    </table>
-                  </div>`
+                : html`<table class="stacked">
+                    <thead>
+                      <tr>
+                        <th>Name</th>
+                        <th>Prefix</th>
+                        <th>Created</th>
+                        <th>Last used</th>
+                        <th></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      ${active.map(
+                        (key) =>
+                          html`<tr>
+                            <td><span class="cell-title">${key.name}</span></td>
+                            <td class="mono" data-label="Prefix">${key.prefix}…</td>
+                            <td class="nowrap subdued" data-label="Created">
+                              ${when(key.createdAt)}
+                            </td>
+                            <td class="nowrap subdued" data-label="Last used">
+                              ${timeAgo(key.lastUsedAt)}
+                            </td>
+                            <td class="actions">
+                              <form
+                                method="post"
+                                action="/console/api-keys/${key.id}/revoke"
+                                class="inline"
+                                data-confirm="Revoke ${key.name}? Any service using it will get 401 immediately."
+                                data-confirm-label="Revoke key"
+                                data-confirm-tone="critical"
+                              >
+                                <button class="critical small">Revoke</button>
+                              </form>
+                            </td>
+                          </tr>`,
+                      )}
+                    </tbody>
+                  </table>`
             }
           </div>
 
           ${
             revoked.length > 0
               ? html`<div class="card flush">
-                  ${cardHead('Revoked')}
-                  <div class="scroll">
-                    <table>
+                  ${cardHead('Revoked', badge(String(revoked.length)))}
+                  <div>
+                    <table class="stacked table-muted">
                       <thead>
                         <tr>
                           <th>Name</th>
@@ -108,9 +125,9 @@ export function renderApiKeys(
                         ${revoked.map(
                           (key) =>
                             html`<tr>
-                              <td class="subdued">${key.name}</td>
-                              <td class="mono subdued">${key.prefix}…</td>
-                              <td class="nowrap subdued">${when(key.revokedAt)}</td>
+                              <td>${key.name}</td>
+                              <td class="mono" data-label="Prefix">${key.prefix}…</td>
+                              <td class="nowrap" data-label="Revoked">${when(key.revokedAt)}</td>
                             </tr>`,
                         )}
                       </tbody>
@@ -121,13 +138,9 @@ export function renderApiKeys(
           }
         </div>
 
-        <div>
+        <div class="col">
           <div class="card">
             ${cardHead('Create a key')}
-            <p class="hint">
-              Use one key per caller so a compromised integration can be revoked without touching
-              the others.
-            </p>
             <form method="post" action="/console/api-keys">
               <label
                 >Key name<input
@@ -163,7 +176,7 @@ export function renderApiKeys(
                         ${icon('copy')}Copy
                       </button>
                     </div>
-                    <p class="subdued" style="margin:8px 0 0">
+                    <p class="help">
                       Permanent; cannot be revoked from the console. It also signs outbound
                       webhooks.
                     </p>`
@@ -172,14 +185,22 @@ export function renderApiKeys(
                       Set with <span class="mono">WHATSAPP_API_KEY</span> at deploy time. It is
                       permanent and cannot be revoked from the console.
                     </p>
-                    <p>
-                      ${
-                        deps.config.apiKey
-                          ? badge('Configured', 'success')
-                          : badge('Not configured', 'attention')
-                      }
-                    </p>`
+                    ${
+                      deps.config.apiKey
+                        ? badge('Configured', 'success dot')
+                        : badge('Not configured', 'attention dot')
+                    }`
             }
+          </div>
+          <div class="card">
+            ${cardHead('API reference')}
+            <p class="hint">
+              Browse every endpoint, its request schema and examples. Open the reference, then paste
+              a key into <b>Authorize</b> to try requests from the browser.
+            </p>
+            <a class="btn" style="width:100%" href="/docs" target="_blank" rel="noreferrer"
+              >${icon('tree-structure')}Open API reference</a
+            >
           </div>
         </div>
       </div>

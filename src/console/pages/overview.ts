@@ -17,15 +17,17 @@ export function renderOverview(deps: ConsoleDependencies, admin: ConsoleAdmin, f
   const settings = deps.settings.get()
   const activity = deps.audit.recent(8)
 
+  const failing = totals.failedLastDay > 0
+
   return shell(
     'Overview',
     { section: 'overview', admin: admin.email },
     html`
       ${header('Overview', {
-        actions: html`<a class="btn" href="/console/sessions">${icon('users')}Sessions</a
-          ><a class="btn primary" href="/console/notifications"
-            >${icon('lightning')}Send a message</a
-          >`,
+        description: 'Sessions, delivery and recent console activity at a glance.',
+        actions: html`<a class="btn primary" href="/console/notifications"
+          >${icon('lightning')}Send a message</a
+        >`,
       })}
       ${
         deps.config.apiKeySource === 'generated' && keys.length === 0
@@ -37,16 +39,21 @@ export function renderOverview(deps: ConsoleDependencies, admin: ConsoleAdmin, f
           : ''
       }
       <div class="stats">
-        ${stat('Sessions', sessions.length, '/console/sessions')}
-        ${stat('Ready', ready, '/console/sessions')}
-        ${stat('Queued messages', totals.pending, '/console/settings#outbox')}
-        ${stat('Failed · 24h', totals.failedLastDay)}
-        ${stat('Active API keys', keys.length, '/console/api-keys')}
-        ${stat('Media spool', formatBytes(media.bytes))}
+        ${stat('Sessions', sessions.length, {
+          href: '/console/sessions',
+          sub: sessions.length ? `${ready} ready` : 'none paired',
+        })}
+        ${stat('Queued', totals.pending, { sub: 'in the outbox' })}
+        ${stat(
+          'Failed · 24h',
+          failing ? html`<span style="color:var(--critical)">${totals.failedLastDay}</span>` : 0,
+          { sub: failing ? 'check status callbacks' : 'all delivered' },
+        )}
+        ${stat('API keys', keys.length, { href: '/console/api-keys', sub: 'active' })}
       </div>
 
-      <div class="layout" style="margin-top:16px">
-        <div>
+      <div class="grid">
+        <div class="col">
           <div class="card flush">
             ${cardHead(
               'Sessions',
@@ -57,80 +64,74 @@ export function renderOverview(deps: ConsoleDependencies, admin: ConsoleAdmin, f
                 ? emptyState(
                     'No sessions yet',
                     'Pair a WhatsApp number to start sending notifications.',
-                    html`<a class="btn primary" href="/console/sessions">Pair a session</a>`,
+                    html`<a class="btn primary" href="/console/sessions"
+                      >${icon('plus')}Pair a session</a
+                    >`,
+                    'users',
                   )
-                : html`<div class="scroll">
-                    <table>
-                      <thead>
-                        <tr>
-                          <th>Session</th>
-                          <th>Status</th>
-                          <th>Queued</th>
-                          <th>Last connected</th>
-                          <th></th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        ${sessions.slice(0, 6).map(
-                          (session) =>
-                            html`<tr>
-                              <td>
-                                <a class="mono" href="${sessionPath(session.sessionId)}"
-                                  >${session.sessionId}</a
-                                >
-                              </td>
-                              <td>${engineBadge(session.status)}</td>
-                              <td class="num">${session.outbox.pending}</td>
-                              <td class="nowrap subdued">${timeAgo(session.lastConnectedAt)}</td>
-                              <td class="num">
-                                <a class="btn small" href="${sessionPath(session.sessionId)}"
-                                  >Open</a
-                                >
-                              </td>
-                            </tr>`,
-                        )}
-                      </tbody>
-                    </table>
-                  </div>`
+                : html`<table class="stacked">
+                    <thead>
+                      <tr>
+                        <th>Session</th>
+                        <th>Status</th>
+                        <th class="num">Queued</th>
+                        <th>Last connected</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      ${sessions.slice(0, 6).map(
+                        (session) =>
+                          html`<tr>
+                            <td>
+                              <a class="mono cell-title" href="${sessionPath(session.sessionId)}"
+                                >${session.sessionId}</a
+                              >
+                            </td>
+                            <td data-label="Status">${engineBadge(session.status)}</td>
+                            <td class="num" data-label="Queued">${session.outbox.pending}</td>
+                            <td class="nowrap subdued" data-label="Last connected">
+                              ${timeAgo(session.lastConnectedAt)}
+                            </td>
+                          </tr>`,
+                      )}
+                    </tbody>
+                  </table>`
             }
           </div>
 
           <div class="card">
             ${cardHead(
               'Delivery',
-              html`<a class="btn small" href="/console/settings#outbox">Settings</a>`,
+              html`<a class="btn small" href="/console/settings#outbox">Edit</a>`,
             )}
             <ul class="list">
               <li>
-                <span class="subdued">Message gap</span
+                <span>Message gap</span
                 ><span
                   >${Math.round(settings.outbox.sendGapMs / 1000)}s + up to
                   ${Math.round(settings.outbox.sendJitterMs / 1000)}s jitter</span
                 >
               </li>
+              <li><span>Hourly cap</span><span>${settings.outbox.hourlyCap} per session</span></li>
               <li>
-                <span class="subdued">Hourly cap</span
-                ><span>${settings.outbox.hourlyCap} messages per session</span>
-              </li>
-              <li>
-                <span class="subdued">Typing simulation</span
+                <span>Typing simulation</span
                 ><span
-                  >${settings.typing ? `on · ${settings.typing.minMs / 1000}–${settings.typing.maxMs / 1000}s` : 'off'}</span
+                  >${settings.typing ? `On · ${settings.typing.minMs / 1000}–${settings.typing.maxMs / 1000}s` : 'Off'}</span
                 >
               </li>
               <li>
-                <span class="subdued">Inbound webhook</span
+                <span>Inbound webhook</span
                 ><span class="clip mono">${settings.inbound.urlTemplate ?? 'disabled'}</span>
               </li>
               <li>
-                <span class="subdued">Status callback</span
+                <span>Status callback</span
                 ><span class="clip mono">${settings.inbound.statusUrlTemplate ?? 'disabled'}</span>
               </li>
             </ul>
           </div>
         </div>
 
-        <div>
+        <div class="col">
           <div class="card">
             ${cardHead(
               'Recent activity',
@@ -138,18 +139,18 @@ export function renderOverview(deps: ConsoleDependencies, admin: ConsoleAdmin, f
             )}
             ${
               activity.length === 0
-                ? html`<p class="subdued">Console actions will appear here.</p>`
-                : html`<ul class="list">
+                ? html`<p class="subdued" style="margin:0">Console actions will appear here.</p>`
+                : html`<ul class="feed">
                     ${activity.map(
                       (entry) =>
                         html`<li>
-                          <span
-                            ><b>${entry.action}</b
-                            >${entry.detail ? html`<br /><span class="subdued">${entry.detail}</span>` : ''}</span
-                          >
-                          <span class="subdued" style="text-align:right"
-                            >${entry.actor}<br />${timeAgo(entry.at)}</span
-                          >
+                          <div class="feed-main">
+                            <b>${entry.action}</b>
+                            <span title="${entry.detail ?? entry.actor}"
+                              >${entry.detail ?? entry.actor}</span
+                            >
+                          </div>
+                          <time datetime="${entry.at}">${timeAgo(entry.at)}</time>
                         </li>`,
                     )}
                   </ul>`
@@ -160,26 +161,28 @@ export function renderOverview(deps: ConsoleDependencies, admin: ConsoleAdmin, f
             ${cardHead('System')}
             <ul class="list">
               <li>
-                <span class="subdued">Environment</span>
+                <span>Environment</span>
                 <span class="mono">${deps.config.nodeEnv}</span>
               </li>
               <li>
-                <span class="subdued">Database</span
-                ><span class="clip mono">${deps.config.databasePath}</span>
+                <span>Database</span
+                ><span class="clip mono" title="${deps.config.databasePath}"
+                  >${deps.config.databasePath}</span
+                >
               </li>
               <li>
-                <span class="subdued">Media files</span
-                ><span>${media.files} · ${formatBytes(media.bytes)}</span>
+                <span>Media spool</span
+                ><span>${media.files} files · ${formatBytes(media.bytes)}</span>
               </li>
               <li>
-                <span class="subdued">Bootstrap API key</span
+                <span>Bootstrap key</span
                 ><span
                   >${
                     deps.config.apiKeySource === 'generated'
-                      ? 'generated'
+                      ? 'Generated'
                       : deps.config.apiKey
-                        ? 'configured'
-                        : 'not set'
+                        ? 'Configured'
+                        : 'Not set'
                   }</span
                 >
               </li>

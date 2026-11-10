@@ -5,7 +5,7 @@ import { timeAgo, when } from '../helpers.js'
 import type { Flash } from '../layout.js'
 import { shell } from '../layout.js'
 import type { ConsoleDependencies } from '../types.js'
-import { badge, cardHead, emptyState, header } from '../ui.js'
+import { badge, emptyState, header, settingsSection } from '../ui.js'
 
 export function renderSecurity(
   deps: ConsoleDependencies,
@@ -19,103 +19,121 @@ export function renderSecurity(
     'Security',
     { section: 'security', admin: admin.email },
     html`
-      ${header('Security')}
-      <p class="page-note subdued">
-        Signed in as <b>${admin.email}</b>. Console sessions are stored in SQLite and expire
-        automatically.
-      </p>
-
-      <div class="layout">
-        <div>
-          <div class="card">
-            ${cardHead('Change password')}
-            <p class="hint">Changing the password signs out every other console session.</p>
-            <form method="post" action="/console/security/password">
-              <label
-                >Current password<input
-                  type="password"
-                  name="current"
-                  required
-                  autocomplete="current-password"
-              /></label>
-              <label
-                >New password<input
-                  type="password"
-                  name="next"
-                  minlength="10"
-                  required
-                  autocomplete="new-password"
-              /></label>
-              <label
-                >Confirm new password<input
-                  type="password"
-                  name="confirm"
-                  minlength="10"
-                  required
-                  autocomplete="new-password"
-              /></label>
-              <div class="foot"><button class="primary" type="submit">Change password</button></div>
-            </form>
+      ${header('Security', {
+        description: html`Signed in as <b>${admin.email}</b>. Console sessions expire automatically.`,
+      })}
+      ${settingsSection(
+        'Password',
+        'Changing the password signs out every other console session.',
+        html`<form method="post" action="/console/security/password">
+          <label
+            >Current password<input
+              type="password"
+              name="current"
+              required
+              autocomplete="current-password"
+          /></label>
+          <div class="fields">
+            <label
+              >New password<input
+                type="password"
+                name="next"
+                minlength="10"
+                required
+                autocomplete="new-password"
+            /></label>
+            <label
+              >Confirm new password<input
+                type="password"
+                name="confirm"
+                minlength="10"
+                required
+                autocomplete="new-password"
+            /></label>
           </div>
-        </div>
-
-        <div>
-          <div class="card flush">
-            ${cardHead('Console sessions', badge(String(sessions.length)))}
-            ${
-              sessions.length === 0
-                ? emptyState('No active sessions', 'Sign in again to create one.')
-                : html`<div class="scroll">
-                    <table>
-                      <thead>
-                        <tr>
-                          <th>Device</th>
-                          <th>IP</th>
-                          <th>Last seen</th>
-                          <th></th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        ${sessions.map(
-                          (session) =>
-                            html`<tr>
-                              <td>
-                                <b>${truncate(session.userAgent ?? 'Unknown browser', 52)}</b>
-                                ${session.id === current.session.id ? badge('This device', 'success') : ''}
-                                <div class="subdued">Started ${when(session.createdAt)}</div>
-                              </td>
-                              <td class="mono subdued">${session.ip ?? '—'}</td>
-                              <td class="nowrap subdued">${timeAgo(session.lastSeenAt)}</td>
-                              <td class="num">
-                                ${
-                                  session.id === current.session.id
-                                    ? html`<span class="subdued">Current</span>`
-                                    : html`<form
-                                        method="post"
-                                        action="/console/security/sessions/${session.id}/revoke"
-                                        class="inline"
-                                        data-confirm="Revoke this console session?"
-                                        data-confirm-label="Revoke session"
-                                        data-confirm-tone="critical"
-                                      >
-                                        <button class="critical small">Revoke</button>
-                                      </form>`
-                                }
-                              </td>
-                            </tr>`,
-                        )}
-                      </tbody>
-                    </table>
-                  </div>`
-            }
-          </div>
-        </div>
-      </div>
+          <div class="foot"><button class="primary" type="submit">Change password</button></div>
+        </form>`,
+      )}
+      ${settingsSection(
+        'Console sessions',
+        'Browsers currently signed in to this console. Revoke any you do not recognise.',
+        sessions.length === 0
+          ? emptyState('No active sessions', 'Sign in again to create one.')
+          : html`<table class="stacked">
+              <thead>
+                <tr>
+                  <th>Device</th>
+                  <th>IP</th>
+                  <th>Last seen</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                ${sessions.map(
+                  (session) =>
+                    html`<tr>
+                      <td style="max-width:280px">
+                        <span class="cell-title clip" title="${session.userAgent ?? ''}"
+                          >${describeAgent(session.userAgent)}</span
+                        >
+                        <span class="cell-sub">Started ${when(session.createdAt)}</span>
+                      </td>
+                      <td class="mono subdued" data-label="IP">${session.ip ?? '—'}</td>
+                      <td class="nowrap subdued" data-label="Last seen">
+                        ${timeAgo(session.lastSeenAt)}
+                      </td>
+                      <td class="actions">
+                        ${
+                          session.id === current.session.id
+                            ? badge('This device', 'success dot')
+                            : html`<form
+                                method="post"
+                                action="/console/security/sessions/${session.id}/revoke"
+                                class="inline"
+                                data-confirm="Revoke this console session?"
+                                data-confirm-label="Revoke session"
+                                data-confirm-tone="critical"
+                              >
+                                <button class="critical small">Revoke</button>
+                              </form>`
+                        }
+                      </td>
+                    </tr>`,
+                )}
+              </tbody>
+            </table>`,
+        { flush: true },
+      )}
     `,
     flash,
   )
 }
 
-function truncate(value: string, max: number): string {
-  return value.length > max ? `${value.slice(0, max - 1)}…` : value
+/** "Chrome on macOS" from a user agent, or the raw string when it is unfamiliar. */
+function describeAgent(agent: string | null): string {
+  if (!agent) return 'Unknown browser'
+  const browser = /Edg\//.test(agent)
+    ? 'Edge'
+    : /OPR\//.test(agent)
+      ? 'Opera'
+      : /Firefox\//.test(agent)
+        ? 'Firefox'
+        : /Chrome\//.test(agent)
+          ? 'Chrome'
+          : /Safari\//.test(agent)
+            ? 'Safari'
+            : null
+  const os = /iPhone|iPad/.test(agent)
+    ? 'iOS'
+    : /Android/.test(agent)
+      ? 'Android'
+      : /Mac OS X/.test(agent)
+        ? 'macOS'
+        : /Windows/.test(agent)
+          ? 'Windows'
+          : /Linux/.test(agent)
+            ? 'Linux'
+            : null
+  if (browser && os) return `${browser} on ${os}`
+  return browser ?? os ?? agent
 }

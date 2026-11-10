@@ -1,7 +1,7 @@
 /**
- * Console chrome, after Shopify Polaris: light canvas, one light sidebar,
- * white cards, a page header with one primary action, index tables and tone
- * badges. Server-rendered; the only JavaScript is a few tiny helpers.
+ * Console chrome: a quiet sidebar, a centred page column, white cards, a page
+ * header with at most one primary action, and tables that stack on phones.
+ * Server-rendered; the only JavaScript is a few tiny helpers.
  */
 import { DIALOG_SCRIPT, confirmDialog } from './dialog.js'
 import { html, raw, type Html } from './html.js'
@@ -15,14 +15,26 @@ export interface ConsoleNav {
 
 export type Flash = { tone: 'success' | 'critical' | 'warning' | 'info'; text: string } | null
 
-const NAV: Array<[string, string, string, IconName]> = [
-  ['overview', 'Overview', '/console', 'house'],
-  ['sessions', 'Sessions', '/console/sessions', 'users'],
-  ['notifications', 'Notifications', '/console/notifications', 'lightning'],
-  ['api-keys', 'API keys', '/console/api-keys', 'key'],
-  ['settings', 'Settings', '/console/settings', 'gear-six'],
-  ['activity', 'Activity', '/console/activity', 'chart-bar'],
-  ['security', 'Security', '/console/security', 'warning-circle'],
+type NavItem = [key: string, label: string, href: string, icon: IconName]
+
+const NAV_GROUPS: Array<[string, NavItem[]]> = [
+  [
+    'Gateway',
+    [
+      ['overview', 'Overview', '/console', 'house'],
+      ['sessions', 'Sessions', '/console/sessions', 'users'],
+      ['notifications', 'Notifications', '/console/notifications', 'lightning'],
+    ],
+  ],
+  [
+    'Admin',
+    [
+      ['api-keys', 'API keys', '/console/api-keys', 'key'],
+      ['settings', 'Settings', '/console/settings', 'gear-six'],
+      ['activity', 'Activity', '/console/activity', 'chart-bar'],
+      ['security', 'Security', '/console/security', 'warning-circle'],
+    ],
+  ],
 ]
 
 function flashParts(flash?: Flash) {
@@ -47,26 +59,20 @@ const CLEAR_FLASH = html`<script>
 </script>`
 
 export function shell(title: string, nav: ConsoleNav, body: Html, flash?: Flash): Html {
-  const link = ([key, label, href, name]: [string, string, string, IconName]) =>
+  const link = ([key, label, href, name]: NavItem) =>
     html`<a
       href="${href}"
-      class="${nav.section === key ? 'on' : ''}"
+      class="nav-link ${nav.section === key ? 'on' : ''}"
+      ${nav.section === key ? html`aria-current="page"` : ''}
       data-tooltip="${label}"
-      aria-label="${label}"
-      >${icon(name)}<span>${label}</span></a
+      >${icon(name, 18)}<span>${label}</span></a
     >`
   const { banner, toast } = flashParts(flash)
 
   return html`<!doctype html>
     <html lang="en">
       <head>
-        <meta charset="utf-8" />
-        <meta name="viewport" content="width=device-width,initial-scale=1" />
-        <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-        <title>${title} · wa-gateway</title>
-        <style>
-          ${raw(CONSOLE_CSS)}
-        </style>
+        ${head(title)}
         <script>
           try {
             if (localStorage.getItem('wa-gateway-nav') === 'collapsed')
@@ -75,34 +81,42 @@ export function shell(title: string, nav: ConsoleNav, body: Html, flash?: Flash)
         </script>
       </head>
       <body>
-        <input type="checkbox" id="nav-toggle" aria-hidden="true" />
+        <input type="checkbox" id="nav-toggle" aria-hidden="true" tabindex="-1" />
         <label for="nav-toggle" class="scrim" aria-hidden="true"></label>
-        <div class="topbar">
-          <label for="nav-toggle" aria-label="Menu">${icon('list', 20)}</label>
-          <div class="brand">${brandMark('sm')}<span>wa-gateway</span></div>
-        </div>
+        <header class="topbar">
+          <label for="nav-toggle" class="topbar-menu" aria-label="Open menu"
+            >${icon('list', 20)}</label
+          >
+          <a class="topbar-brand" href="/console"
+            >${brandMark('sm')}<span>WhatsApp Gateway</span></a
+          >
+        </header>
         <div class="frame">
-          <nav class="nav">
+          <nav class="nav" aria-label="Console">
             <div class="nav-head">
-              <a class="switcher-btn" href="/console" style="text-decoration:none">
+              <a class="nav-brand" href="/console">
                 ${brandMark()}
-                <span class="switcher-text"
-                  ><span class="switcher-org">WhatsApp gateway</span><b>wa-gateway</b></span
+                <span class="nav-brand-text"
+                  ><b>WhatsApp Gateway</b><span>Admin console</span></span
                 >
               </a>
               <button
                 type="button"
                 class="nav-toggle"
                 data-nav-toggle
-                data-tooltip="Toggle sidebar"
+                data-tooltip="Expand sidebar"
                 aria-label="Toggle sidebar"
               >
                 <span class="nav-collapse-icon">${icon('caret-double-left')}</span
                 ><span class="nav-expand-icon">${icon('caret-double-right')}</span>
               </button>
             </div>
-            ${NAV.map(link)}
-            <div class="foot">
+            ${NAV_GROUPS.map(
+              ([group, items]) =>
+                html`<div class="nav-group">${group}</div>
+                  ${items.map(link)}`,
+            )}
+            <div class="nav-foot">
               ${avatar(nav.admin)}<span class="nav-admin" title="${nav.admin}">${nav.admin}</span>
               <form
                 method="post"
@@ -112,12 +126,15 @@ export function shell(title: string, nav: ConsoleNav, body: Html, flash?: Flash)
                 data-confirm-label="Sign out"
               >
                 <button class="icon-btn" data-tooltip="Sign out" aria-label="Sign out">
-                  ${icon('sign-out')}
+                  ${icon('sign-out', 18)}
                 </button>
               </form>
             </div>
           </nav>
-          <main>${banner} ${body} ${toast} ${flash ? CLEAR_FLASH : ''}</main>
+          <main>
+            <div class="page">${banner} ${body}</div>
+            ${toast} ${flash ? CLEAR_FLASH : ''}
+          </main>
         </div>
         <div id="nav-tooltip" class="nav-tooltip" role="tooltip" hidden></div>
         ${confirmDialog()}
@@ -131,25 +148,28 @@ export function shell(title: string, nav: ConsoleNav, body: Html, flash?: Flash)
     </html>`
 }
 
+function head(title: string): Html {
+  return html`<meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="theme-color" content="#f7f7f8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <title>${title} · WhatsApp Gateway</title>
+    <style>
+      ${raw(CONSOLE_CSS)}
+    </style>`
+}
+
 /** Auth pages: one card on the canvas, no sidebar. */
 export function bare(title: string, body: Html): Html {
   return html`<!doctype html>
     <html lang="en">
       <head>
-        <meta charset="utf-8" />
-        <meta name="viewport" content="width=device-width,initial-scale=1" />
-        <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-        <title>${title} · wa-gateway</title>
-        <style>
-          ${raw(CONSOLE_CSS)}
-        </style>
+        ${head(title)}
       </head>
       <body>
-        <main class="select-main">
-          <div class="auth">
-            <div class="brand">${brandMark()}<span>wa-gateway</span></div>
-            ${body}
-          </div>
+        <main class="auth">
+          <div class="auth-brand">${brandMark()}<span>WhatsApp Gateway</span></div>
+          ${body}
         </main>
         <script>
           ${raw(DIALOG_SCRIPT)}
@@ -165,6 +185,12 @@ const CONSOLE_SCRIPT = `
 (() => {
   if (window.__waGatewayConsole) return
   window.__waGatewayConsole = true
+
+  // Escape closes the phone menu.
+  document.addEventListener('keydown', (event) => {
+    const toggle = document.getElementById('nav-toggle')
+    if (event.key === 'Escape' && toggle instanceof HTMLInputElement) toggle.checked = false
+  })
 
   // Submit once: a second click cannot queue a second POST. The native
   // constraint validation has already run by the time this event fires.

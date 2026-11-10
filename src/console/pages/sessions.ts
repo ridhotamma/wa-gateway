@@ -5,7 +5,7 @@ import { engineBadge, sessionPath, timeAgo, when } from '../helpers.js'
 import type { Flash } from '../layout.js'
 import { shell } from '../layout.js'
 import type { ConsoleDependencies } from '../types.js'
-import { cardHead, emptyState, header, icon } from '../ui.js'
+import { badge, cardHead, emptyState, header, icon, stat } from '../ui.js'
 
 export function renderSessions(deps: ConsoleDependencies, admin: ConsoleAdmin, flash: Flash): Html {
   const sessions = listSessionRows(deps)
@@ -14,42 +14,45 @@ export function renderSessions(deps: ConsoleDependencies, admin: ConsoleAdmin, f
     'Sessions',
     { section: 'sessions', admin: admin.email },
     html`
-      ${header('Sessions')}
+      ${header('Sessions', {
+        description: 'Each session is one linked WhatsApp number, named by its tenant slug.',
+      })}
 
-      <div class="card">
-        ${cardHead('Pair a session')}
-        <p class="hint">
-          The session id is the tenant slug. Starting a new session shows a QR code to scan from
-          WhatsApp.
-        </p>
-        <form method="post" action="/console/sessions" class="fields">
-          <label
-            >Session id<input
-              name="sessionId"
-              placeholder="shop"
-              pattern="[a-zA-Z0-9_-]{1,64}"
-              required
-              autocomplete="off"
-          /></label>
-          <div style="display:flex;align-items:flex-end;margin-bottom:12px">
+      <div class="stack">
+        <div class="card">
+          ${cardHead('Pair a session')}
+          <p class="hint">Starting a session shows a QR code to scan from WhatsApp.</p>
+          <form method="post" action="/console/sessions" class="inline-form">
+            <label
+              >Session id<input
+                name="sessionId"
+                class="mono"
+                placeholder="shop"
+                pattern="[a-zA-Z0-9_-]{1,64}"
+                required
+                autocomplete="off"
+            /></label>
             <button class="primary" type="submit">${icon('plus')}Start pairing</button>
-          </div>
-        </form>
-      </div>
+          </form>
+        </div>
 
-      <div class="card flush">
-        ${cardHead('All sessions')}
-        ${
-          sessions.length === 0
-            ? emptyState('No sessions yet', 'Pair a number above to get started.')
-            : html`<div class="scroll">
-                <table>
+        <div class="card flush">
+          ${cardHead('All sessions', badge(String(sessions.length)))}
+          ${
+            sessions.length === 0
+              ? emptyState(
+                  'No sessions yet',
+                  'Pair a number above to get started.',
+                  undefined,
+                  'users',
+                )
+              : html`<table class="stacked">
                   <thead>
                     <tr>
                       <th>Session</th>
                       <th>Status</th>
                       <th>Paired</th>
-                      <th>Queued</th>
+                      <th class="num">Queued</th>
                       <th>Last connected</th>
                       <th></th>
                     </tr>
@@ -59,17 +62,19 @@ export function renderSessions(deps: ConsoleDependencies, admin: ConsoleAdmin, f
                       (session) =>
                         html`<tr>
                           <td>
-                            <a class="mono" href="${sessionPath(session.sessionId)}"
+                            <a class="mono cell-title" href="${sessionPath(session.sessionId)}"
                               >${session.sessionId}</a
                             >
                           </td>
-                          <td>
-                            ${engineBadge(session.status)}${session.active ? html` <span class="badge info">live</span>` : ''}
+                          <td data-label="Status">
+                            ${engineBadge(session.status)}${session.active ? html` <span class="badge info dot">live</span>` : ''}
                           </td>
-                          <td>${session.paired ? 'Yes' : 'No'}</td>
-                          <td class="num">${session.outbox.pending}</td>
-                          <td class="nowrap subdued">${timeAgo(session.lastConnectedAt)}</td>
-                          <td class="num">
+                          <td data-label="Paired">${session.paired ? 'Yes' : 'No'}</td>
+                          <td class="num" data-label="Queued">${session.outbox.pending}</td>
+                          <td class="nowrap subdued" data-label="Last connected">
+                            ${timeAgo(session.lastConnectedAt)}
+                          </td>
+                          <td class="actions">
                             <div class="row-actions">
                               <a class="btn small" href="${sessionPath(session.sessionId)}">Open</a>
                               <form
@@ -87,9 +92,9 @@ export function renderSessions(deps: ConsoleDependencies, admin: ConsoleAdmin, f
                         </tr>`,
                     )}
                   </tbody>
-                </table>
-              </div>`
-        }
+                </table>`
+          }
+        </div>
       </div>
     `,
     flash,
@@ -115,6 +120,8 @@ export function renderSession(
     html`
       ${header(sessionId, {
         back: '/console/sessions',
+        mono: true,
+        meta: html`<span id="live-status-badge">${engineBadge(status)}</span>`,
         actions: html`<form
           method="post"
           action="/console/sessions/${encodeURIComponent(sessionId)}/start"
@@ -127,86 +134,68 @@ export function renderSession(
       })}
 
       <div class="stats">
-        <div class="stat">
-          <span>Status</span><b><span id="live-status-badge">${engineBadge(status)}</span></b>
-        </div>
-        <div class="stat"><span>Queued</span><b id="live-pending">${stats.pending}</b></div>
-        <div class="stat">
-          <span>Failed · 24h</span><b id="live-failed">${stats.failedLastDay}</b>
-        </div>
-        <div class="stat">
-          <span>Last connected</span
-          ><b style="font-size:14px;line-height:22px">${when(stored?.lastConnectedAt)}</b>
-        </div>
+        ${stat('Queued', stats.pending, { id: 'live-pending' })}
+        ${stat('Failed · 24h', stats.failedLastDay, { id: 'live-failed' })}
+        ${stat('Last connected', when(stored?.lastConnectedAt), { small: true })}
+        ${stat('Paired', stored?.paired ? 'Yes' : 'No', { small: true })}
       </div>
 
-      <div class="layout" style="margin-top:16px">
-        <div>
+      <div class="grid">
+        <div class="col">
           <div class="card" id="qr-card" ${qr ? '' : html`hidden`}>
             ${cardHead('Scan to link WhatsApp')}
-            <p class="hint">
-              Open WhatsApp on the seller's phone → Linked devices → Link a device, then scan this
-              code.
-            </p>
-            <div style="display:flex;justify-content:center;padding:8px">
+            <ol class="steps">
+              <li>Open WhatsApp on the seller's phone.</li>
+              <li>Go to <b>Linked devices</b> → <b>Link a device</b>.</li>
+              <li>Scan this code. It refreshes automatically.</li>
+            </ol>
+            <div class="qr">
               <img
                 id="qr-image"
                 ${qr ? html`src="${qr}"` : ''}
                 alt="WhatsApp pairing QR code"
-                width="280"
-                height="280"
-                style="max-width:100%;height:auto;border-radius:8px;background:#fff"
+                width="260"
+                height="260"
               />
             </div>
-            <p class="subdued" style="text-align:center">
-              The code refreshes automatically. Give up after a few minutes and start again.
+            <p class="subdued" style="margin:0;text-align:center;font-size:12.5px">
+              Nothing after a few minutes? Start pairing again.
             </p>
           </div>
 
-          <div class="card">
-            ${cardHead('Rename session')}
-            <p class="hint">
-              The session id is the tenant slug. Renaming moves credentials and queued messages; no
-              re-scan is needed.
-            </p>
-            <form
-              method="post"
-              action="/console/sessions/${encodeURIComponent(sessionId)}/rename"
-              class="fields"
-            >
-              <label
-                >New session id<input
-                  name="to"
-                  value="${sessionId}"
-                  pattern="[a-zA-Z0-9_-]{1,64}"
-                  required
-              /></label>
-              <div style="display:flex;align-items:flex-end;margin-bottom:12px">
-                <button type="submit">Rename</button>
-              </div>
-            </form>
-          </div>
-        </div>
-
-        <div>
           <div class="card">
             ${cardHead('Connection')}
             <ul class="list">
               <li>
-                <span class="subdued">Status</span
-                ><span id="live-status">${status.replaceAll('_', ' ')}</span>
+                <span>Status</span
+                ><span id="live-status" style="text-transform:capitalize"
+                  >${status.replaceAll('_', ' ')}</span
+                >
               </li>
-              <li>
-                <span class="subdued">Reason</span><span id="live-reason">${reason ?? '—'}</span>
-              </li>
-              <li>
-                <span class="subdued">Paired</span><span>${stored?.paired ? 'Yes' : 'No'}</span>
-              </li>
-              <li><span class="subdued">Updated</span><span>${when(stored?.updatedAt)}</span></li>
+              <li><span>Reason</span><span id="live-reason">${reason ?? '—'}</span></li>
+              <li><span>Updated</span><span>${when(stored?.updatedAt)}</span></li>
             </ul>
           </div>
+        </div>
 
+        <div class="col">
           <div class="card">
+            ${cardHead('Rename session')}
+            <p class="hint">Moves credentials and queued messages. No re-scan needed.</p>
+            <form method="post" action="/console/sessions/${encodeURIComponent(sessionId)}/rename">
+              <label
+                >New session id<input
+                  name="to"
+                  class="mono"
+                  value="${sessionId}"
+                  pattern="[a-zA-Z0-9_-]{1,64}"
+                  required
+              /></label>
+              <div class="foot"><button type="submit">Rename</button></div>
+            </form>
+          </div>
+
+          <div class="card danger">
             ${cardHead('Danger zone')}
             <p class="hint">
               Logging out removes this session's credentials. The seller must scan a new QR code.
@@ -245,6 +234,7 @@ function sessionPollScript(sessionId: string): string {
   const image = document.getElementById('qr-image')
   let stopped = false
 
+  const label = (status) => { const text = String(status).replaceAll('_', ' '); return text.charAt(0).toUpperCase() + text.slice(1) }
   const tone = (status) => status === 'ready' ? 'success' : status === 'failed' ? 'critical' : status === 'qr_ready' ? 'attention' : status ? 'info' : ''
   async function poll() {
     if (stopped) return
@@ -258,7 +248,7 @@ function sessionPollScript(sessionId: string): string {
       if (reasonEl) reasonEl.textContent = data.reason || '—'
       if (pendingEl) pendingEl.textContent = String(data.outbox?.pending ?? 0)
       if (failedEl) failedEl.textContent = String(data.outbox?.failedLastDay ?? 0)
-      if (badgeEl) badgeEl.innerHTML = '<span class="badge ' + tone(status) + '">' + String(status).replaceAll('_', ' ') + '</span>'
+      if (badgeEl) badgeEl.innerHTML = '<span class="badge ' + tone(status) + '">' + label(status) + '</span>'
       if (card && image) {
         if (data.qrDataUrl) { image.src = data.qrDataUrl; card.hidden = false }
         else if (status !== 'qr_ready') { card.hidden = true }

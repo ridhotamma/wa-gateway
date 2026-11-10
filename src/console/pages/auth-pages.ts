@@ -31,7 +31,6 @@ export function renderLogin(email = '', error?: string, notice?: string): Html {
           <div class="foot"><button class="primary" type="submit">Sign in</button></div>
         </form>
       </div>
-      <p class="subdued" style="text-align:center;margin-top:12px">wa-gateway console</p>
     `,
   )
 }
@@ -75,9 +74,9 @@ export function renderSetup(error?: string, email = ''): Html {
           <div class="foot"><button class="primary" type="submit">Create admin</button></div>
         </form>
       </div>
-      <p class="subdued" style="text-align:center;margin-top:12px">
-        You can also set WHATSAPP_CONSOLE_EMAIL and WHATSAPP_CONSOLE_PASSWORD to seed this account
-        automatically.
+      <p class="auth-note">
+        Or set <span class="mono">WHATSAPP_CONSOLE_EMAIL</span> and
+        <span class="mono">WHATSAPP_CONSOLE_PASSWORD</span> to seed this account automatically.
       </p>
     `,
   )
@@ -89,7 +88,7 @@ export function renderNotFound(title: string, message: string): Html {
     html`<div class="card">
       <h2>${title}</h2>
       <p class="hint">${message}</p>
-      <div class="foot"><a class="btn" href="/console">Back to console</a></div>
+      <div class="foot"><a class="btn" style="width:100%" href="/console">Back to console</a></div>
     </div>`,
   )
 }

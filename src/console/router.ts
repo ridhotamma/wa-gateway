@@ -28,6 +28,7 @@ import {
 import { renderActivity } from './pages/activity.js'
 import { renderApiKeys } from './pages/api-keys.js'
 import { renderLogin, renderNotFound, renderSetup } from './pages/auth-pages.js'
+import { MAX_UPLOAD_BYTES, detectMimetype, mimeFromName } from './media.js'
 import {
   noticeDefaults,
   renderNotifications,
@@ -301,7 +302,8 @@ export function createConsoleApp(deps: ConsoleDependencies): Hono<AppEnv> {
       const sessionId = parseSessionId(values.sessionId)
       const phone = parsePhone(values.phone)
       const buttons = collectButtons(values).filter((button) => button.id || button.text)
-      const media = values.mode === 'media' ? parseMedia(values) : null
+      const file = body.mediaFile instanceof File ? body.mediaFile : null
+      const media = values.mode === 'media' ? await parseMedia(values, file) : null
 
       if (values.mode === 'buttons') {
         if (buttons.length === 0) throw new Error('Add at least one button.')
@@ -313,7 +315,13 @@ export function createConsoleApp(deps: ConsoleDependencies): Hono<AppEnv> {
       if (values.mode === 'text' && values.text.trim().length === 0) {
         throw new Error('The message body is required.')
       }
-      if (values.mode === 'media' && !media) throw new Error('Add a media URL or base64 payload.')
+      if (values.mode === 'media' && !media) {
+        throw new Error(
+          values.mediaSource === 'upload'
+            ? 'Choose a file to upload.'
+            : 'Add a media URL or base64 payload.',
+        )
+      }
 
       if (values.delivery === 'queue') {
         if (!deps.sessions.isKnown(sessionId)) throw new Error('That session is not paired.')
@@ -322,7 +330,7 @@ export function createConsoleApp(deps: ConsoleDependencies): Hono<AppEnv> {
           !/^https?:\/\//i.test(media.data) &&
           media.data.length > MAX_QUEUED_MEDIA_BASE64
         ) {
-          throw new Error('Queued media over 1.5 MB must be a URL.')
+          throw new Error('Queued files are limited to about 1 MB. Use Send now or a URL.')
         }
 
         const kind = values.kind.trim() || 'console.test'
@@ -603,6 +611,7 @@ function noticeValues(body: Record<string, string | File>): NoticeFormValues {
   const delivery = formString(body, 'delivery')
   return {
     mode: mode === 'buttons' || mode === 'media' ? mode : 'text',
+    mediaSource: formString(body, 'mediaSource') === 'url' ? 'url' : 'upload',
     delivery: delivery === 'queue' ? 'queue' : 'direct',
     sessionId: formString(body, 'sessionId'),
     phone: formString(body, 'phone'),
@@ -633,17 +642,39 @@ function collectButtons(values: NoticeFormValues): Array<{ id: string; text: str
     .filter((button) => button.id || button.text)
 }
 
-function parseMedia(values: NoticeFormValues): OutboxMedia | null {
-  const data = values.mediaData.trim()
-  if (!data) return null
-  const mimetype = values.mimetype.trim().toLowerCase()
+async function parseMedia(
+  values: NoticeFormValues,
+  file: File | null,
+): Promise<OutboxMedia | null> {
+  let data: string
+  let filename = values.filename.trim()
+  let mimetype = values.mimetype.trim().toLowerCase()
+
+  if (values.mediaSource === 'upload') {
+    if (!file || file.size === 0) return null
+    if (file.size > MAX_UPLOAD_BYTES) throw new Error('Uploads are limited to 7 MB. Use a URL.')
+    const bytes = new Uint8Array(await file.arrayBuffer())
+    data = Buffer.from(bytes).toString('base64')
+    filename ||= file.name
+    mimetype ||= detectMimetype(bytes, file.name, file.type) ?? ''
+  } else {
+    data = values.mediaData.trim()
+    if (!data) return null
+    if (!mimetype) {
+      mimetype = /^https?:\/\//i.test(data)
+        ? (mimeFromName(data) ?? mimeFromName(filename) ?? '')
+        : (detectMimetype(Buffer.from(data.slice(0, 64), 'base64'), filename) ?? '')
+    }
+  }
+
+  if (!mimetype) throw new Error('Could not detect the file type. Enter a MIME type.')
   if (!/^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*$/i.test(mimetype)) {
     throw new Error('Enter a valid MIME type.')
   }
   return {
     data,
     mimetype,
-    ...(values.filename.trim() ? { filename: values.filename.trim() } : {}),
+    ...(filename ? { filename } : {}),
     ...(values.caption.trim() ? { caption: values.caption.trim() } : {}),
   }
 }

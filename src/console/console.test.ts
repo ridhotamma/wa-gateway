@@ -404,6 +404,59 @@ describe('console pages', () => {
     expect(settings.get().outbox.hourlyCap).toBe(120)
   })
 
+  test('queues an uploaded file and detects its MIME type', async () => {
+    const cookie = await signIn()
+    const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3])
+    const body = new FormData()
+    for (const [key, value] of Object.entries({
+      sessionId: 'shop',
+      phone: '6281234567890',
+      mode: 'media',
+      mediaSource: 'upload',
+      mimetype: '',
+      filename: '',
+      caption: 'Your receipt',
+      delivery: 'queue',
+      kind: 'order.paid',
+      idempotencyKey: 'order:1:receipt',
+    })) {
+      body.set(key, value)
+    }
+    body.set('mediaFile', new File([png], 'receipt', { type: '' }))
+
+    const response = await app.request('/console/notifications', {
+      method: 'POST',
+      headers: { cookie },
+      body,
+    })
+    expect(response.status).toBe(303)
+
+    const row = db.prepare('SELECT media_json FROM outbox_jobs').get() as { media_json: string }
+    expect(JSON.parse(row.media_json)).toMatchObject({
+      data: Buffer.from(png).toString('base64'),
+      mimetype: 'image/png',
+      filename: 'receipt',
+      caption: 'Your receipt',
+    })
+  })
+
+  test('asks for a file when the upload is empty', async () => {
+    const cookie = await signIn()
+    const body = new FormData()
+    body.set('sessionId', 'shop')
+    body.set('phone', '6281234567890')
+    body.set('mode', 'media')
+    body.set('mediaSource', 'upload')
+    body.set('delivery', 'queue')
+    const response = await app.request('/console/notifications', {
+      method: 'POST',
+      headers: { cookie },
+      body,
+    })
+    expect(response.status).toBe(400)
+    expect(await response.text()).toContain('Choose a file to upload.')
+  })
+
   test('returns 404 for an unknown console page', async () => {
     const cookie = await signIn()
     const response = await app.request('/console/nope', { headers: { cookie } })
