@@ -56,6 +56,8 @@ code,.mono,pre{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size
 /* App frame: sidebar + content */
 .frame{display:grid;grid-template-columns:var(--nav-w) minmax(0,1fr);min-height:100vh}
 .nav{position:sticky;top:0;height:100vh;display:flex;flex-direction:column;gap:2px;padding:14px 10px;overflow:auto;background:var(--bg)}
+/* Keep items at full size; a short window scrolls the sidebar instead of squeezing it. */
+.nav>*{flex-shrink:0}
 .nav-head{display:flex;align-items:center;gap:6px;padding:0 2px 14px}
 .nav-brand{display:flex;align-items:center;gap:10px;flex:1;min-width:0;padding:4px;border-radius:var(--radius);color:var(--text)}
 .nav-brand:hover{text-decoration:none;background:var(--hover)}
