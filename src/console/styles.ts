@@ -55,7 +55,7 @@ code,.mono,pre{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size
 
 /* App frame: sidebar + content */
 .frame{display:grid;grid-template-columns:var(--nav-w) minmax(0,1fr);min-height:100vh}
-.nav{position:sticky;top:0;height:100vh;display:flex;flex-direction:column;gap:2px;padding:14px 10px;overflow:auto;background:var(--bg)}
+.nav{position:sticky;top:0;height:100vh;display:flex;flex-direction:column;gap:2px;padding:0 10px;overflow:auto;background:var(--bg)}
 /* Keep items at full size; a short window scrolls the sidebar instead of squeezing it. */
 .nav>*{flex-shrink:0}
 /* Sidebar scrollbar: thin and rounded, hidden until the sidebar is hovered or focused. The gutter is reserved so links never shift. */
@@ -66,7 +66,8 @@ code,.mono,pre{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size
 .nav::-webkit-scrollbar-thumb{border-radius:6px;background:transparent}
 .nav:hover::-webkit-scrollbar-thumb,.nav:focus-within::-webkit-scrollbar-thumb{background:var(--border-strong)}
 .nav::-webkit-scrollbar-thumb:hover{background:var(--subdued)}
-.nav-head{display:flex;align-items:center;gap:6px;padding:0 2px 14px}
+/* The brand and the account row stay pinned; only the links between them scroll. */
+.nav-head{position:sticky;top:0;z-index:2;display:flex;align-items:center;gap:6px;padding:14px 2px 12px;border-bottom:1px solid var(--border);background:var(--bg)}
 .nav-brand{display:flex;align-items:center;gap:10px;flex:1;min-width:0;padding:4px;border-radius:var(--radius);color:var(--text)}
 .nav-brand:hover{text-decoration:none;background:var(--hover)}
 .nav-brand-text{display:flex;flex-direction:column;min-width:0;line-height:1.2}
@@ -77,7 +78,7 @@ code,.mono,pre{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size
 .nav-link:hover{background:var(--hover);color:var(--text);text-decoration:none}
 .nav-link.on{background:var(--surface);color:var(--text);box-shadow:var(--shadow-sm),inset 0 0 0 1px var(--border)}
 .nav-link.on .icon{color:var(--brand)}
-.nav-foot{display:flex;align-items:center;gap:8px;margin-top:auto;padding:12px 4px 0;border-top:1px solid var(--border)}
+.nav-foot{position:sticky;bottom:0;z-index:2;display:flex;align-items:center;gap:8px;margin-top:auto;padding:12px 4px;border-top:1px solid var(--border);background:var(--bg)}
 .nav-admin{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--subdued);font-size:13px}
 .nav-toggle{all:unset;display:flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:8px;color:var(--subdued);cursor:pointer}
 .nav-toggle:hover{background:var(--hover);color:var(--text)}
@@ -93,7 +94,7 @@ code,.mono,pre{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size
   html.nav-collapsed .nav-brand{flex:none}
   html.nav-collapsed .nav-brand-text,html.nav-collapsed .nav-group,html.nav-collapsed .nav-link span,html.nav-collapsed .nav-admin{display:none}
   html.nav-collapsed .nav-link{justify-content:center;padding:0}
-  html.nav-collapsed .nav-foot{flex-direction:column;padding:12px 0 0}
+  html.nav-collapsed .nav-foot{flex-direction:column;padding:12px 0}
   html.nav-collapsed .nav-collapse-icon{display:none!important}
   html.nav-collapsed .nav-expand-icon{display:flex!important}
 }
@@ -331,6 +332,7 @@ dialog::backdrop{background:rgba(16,16,20,.4)}
   .topbar-brand{display:flex;align-items:center;gap:8px;color:var(--text);font-weight:500}
   .topbar-brand:hover{text-decoration:none}
   .nav{position:fixed;inset:0 auto 0 0;z-index:30;width:272px;background:var(--surface);box-shadow:var(--shadow-lg);transform:translateX(-100%);transition:transform .22s ease;visibility:hidden}
+  .nav-head,.nav-foot{background:var(--surface)}
   #nav-toggle:checked~.frame .nav{transform:none;visibility:visible}
   #nav-toggle:checked~.scrim{display:block;position:fixed;inset:0;z-index:25;background:rgba(16,16,20,.35)}
   .nav-toggle{display:none}
